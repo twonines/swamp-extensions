@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "zod": "npm:zod@4",
+    "@systeminit/swamp-testing": "jsr:@systeminit/swamp-testing"
+  }
+}
