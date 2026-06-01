@@ -4,7 +4,7 @@ version: "2026.05.31.1"
 description: >
   Queries Coder workspace API and captures state snapshots. Records workspace
   status, agent state, and build info for stability and drift analysis.
-repository: "https://github.com/twonines/swamp-extensions"
+repository: "https://codeberg.org/twonines/swamp-extensions"
 paths:
   base: manifest
 models:

@@ -4,7 +4,7 @@ version: "2026.05.31.1"
 description: >
   Polls Coder server health and build info endpoints. Produces typed health
   state with latency measurements for reliability analysis.
-repository: "https://github.com/twonines/swamp-extensions"
+repository: "https://codeberg.org/twonines/swamp-extensions"
 paths:
   base: manifest
 models:

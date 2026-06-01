@@ -4,7 +4,7 @@ version: "2026.05.31.1"
 description: >
   Pages through the Coder audit log API and writes events as versioned data.
   Supports incremental collection with configurable limits and query filters.
-repository: "https://github.com/twonines/swamp-extensions"
+repository: "https://codeberg.org/twonines/swamp-extensions"
 paths:
   base: manifest
 models:

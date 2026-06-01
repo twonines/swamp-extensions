@@ -5,7 +5,7 @@ description: >
   Scrapes Prometheus metrics from Coder's metrics endpoint. Extracts key
   operational indicators (API latency, workspace counts, agent connections)
   and writes typed snapshots for trend analysis.
-repository: "https://github.com/twonines/swamp-extensions"
+repository: "https://codeberg.org/twonines/swamp-extensions"
 paths:
   base: manifest
 models:
