@@ -1,0 +1,24 @@
+manifestVersion: 1
+name: "@twonines/coder-event-log"
+version: "2026.05.31.1"
+description: >
+  Records webhook payloads received from Coder notifications. Stores each
+  event with receipt metadata for delivery latency and reliability analysis.
+repository: "https://github.com/twonines/swamp-extensions"
+paths:
+  base: manifest
+models:
+  - mod.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.txt
+labels:
+  - coder
+  - webhook
+  - notifications
+dependencies: []
