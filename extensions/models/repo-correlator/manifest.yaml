@@ -1,0 +1,26 @@
+manifestVersion: 1
+name: "@twonines/repo-correlator"
+version: "2026.06.04.1"
+description: >
+  Stores and manages repository fact proposals with evidence tracking.
+  Ferret proposes findings; mole accepts or rejects them after validation.
+  Accepted facts form the input layer for downstream consumers like jitter.
+repository: "https://codeberg.org/twonines/swamp-extensions"
+paths:
+  base: manifest
+models:
+  - mod.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.txt
+labels:
+  - repository
+  - facts
+  - proposals
+  - jitter
+dependencies: []
