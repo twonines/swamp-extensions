@@ -1,0 +1,299 @@
+// ABOUTME: Scans a GitLab repository and returns structured metadata,
+// ABOUTME: a recursive file tree, and the contents of high-signal files.
+// ABOUTME: Use fetch_files for on-demand content retrieval of paths
+// ABOUTME: discovered in the file tree.
+import { z } from "zod";
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+const DEFAULT_HIGH_SIGNAL_FILES = [
+  ".gitlab-ci.yml",
+  "go.mod",
+  "Cargo.toml",
+  "package.json",
+  "pom.xml",
+  "requirements.txt",
+  "pyproject.toml",
+  "Dockerfile",
+  "docker-compose.yml",
+  "docker-compose.yaml",
+  "Makefile",
+  "README.md",
+];
+
+const GlobalArgsSchema = z.object({
+  url: z.string().url().describe("GitLab instance base URL (e.g. https://gitlab.com)"),
+  token: z.string().describe("Personal access token with read_api scope"),
+});
+
+// ---------------------------------------------------------------------------
+// Output schemas
+// ---------------------------------------------------------------------------
+
+const ContributorSchema = z.object({
+  name: z.string(),
+  email: z.string(),
+  commits: z.number(),
+});
+
+const FileEntrySchema = z.object({
+  path: z.string(),
+  type: z.enum(["blob", "tree"]),
+});
+
+const KnownFileSchema = z.object({
+  path: z.string(),
+  content: z.string(),
+  truncated: z.boolean(),
+});
+
+const RepoScanSchema = z.object({
+  path: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  defaultBranch: z.string(),
+  lastActivityAt: z.string(),
+  visibility: z.string(),
+  languages: z.record(z.string(), z.number()),
+  starCount: z.number(),
+  forksCount: z.number(),
+  topics: z.array(z.string()),
+  contributors: z.array(ContributorSchema),
+  fileTree: z.array(FileEntrySchema),
+  knownFiles: z.array(KnownFileSchema),
+  scannedAt: z.string(),
+});
+
+const FetchedFileSchema = z.object({
+  path: z.string(),
+  content: z.string().nullable(),
+  error: z.string().optional(),
+  truncated: z.boolean(),
+});
+
+const FetchFilesResultSchema = z.object({
+  path: z.string(),
+  files: z.array(FetchedFileSchema),
+  fetchedAt: z.string(),
+});
+
+const MAX_FILE_BYTES = 32_768; // 32KB
+const MAX_README_BYTES = 2_048; // 2KB
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function authHeaders(token: string): Record<string, string> {
+  return { "PRIVATE-TOKEN": token };
+}
+
+async function gitlabGet(
+  base: string,
+  token: string,
+  path: string,
+): Promise<unknown> {
+  const res = await fetch(`${base}/api/v4/${path}`, {
+    headers: authHeaders(token),
+  });
+  if (!res.ok) {
+    throw new Error(`GitLab API error ${res.status} for ${path}`);
+  }
+  return res.json();
+}
+
+async function fetchFileRaw(
+  base: string,
+  token: string,
+  projectId: string,
+  filePath: string,
+  branch: string,
+  maxBytes: number,
+): Promise<{ content: string; truncated: boolean } | null> {
+  try {
+    const encoded = encodeURIComponent(filePath);
+    const res = await fetch(
+      `${base}/api/v4/projects/${projectId}/repository/files/${encoded}/raw?ref=${encodeURIComponent(branch)}`,
+      { headers: authHeaders(token) },
+    );
+    if (!res.ok) return null;
+    const text = await res.text();
+    if (text.length > maxBytes) {
+      return { content: text.slice(0, maxBytes), truncated: true };
+    }
+    return { content: text, truncated: false };
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+export const model = {
+  type: "@twonines/gitlab-repo-scanner",
+  version: "2026.06.04.1",
+  description:
+    "Scans a GitLab repository: returns structured metadata, a recursive file tree, " +
+    "and contents of high-signal files. Use fetch_files for on-demand content " +
+    "retrieval of paths discovered in the file tree.",
+  globalArguments: GlobalArgsSchema,
+  resources: {
+    scan: {
+      description: "Repository scan result",
+      schema: RepoScanSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 10,
+    },
+    files: {
+      description: "On-demand file content result",
+      schema: FetchFilesResultSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    scan: {
+      description:
+        "Scan a repository. Returns metadata, recursive file tree (paths only), " +
+        "and contents of known high-signal files (.gitlab-ci.yml, go.mod, Dockerfile, etc.).",
+      arguments: z.object({
+        projectPath: z
+          .string()
+          .describe("Repository path (e.g. myorg/myrepo)"),
+        highSignalFiles: z
+          .array(z.string())
+          .optional()
+          .describe("Override the default list of files to auto-fetch on scan"),
+      }),
+      // deno-lint-ignore no-explicit-any
+      execute: async (args: { projectPath: string; highSignalFiles?: string[] }, context: any) => {
+        const { url, token } = context.globalArgs as z.infer<typeof GlobalArgsSchema>;
+        const projectPath = args.projectPath;
+        const signalFiles = args.highSignalFiles ?? DEFAULT_HIGH_SIGNAL_FILES;
+        const id = encodeURIComponent(projectPath);
+
+        context.logger.info("Scanning repository {path}", { path: projectPath });
+
+        const project = await gitlabGet(url, token, `projects/${id}`) as Record<string, unknown>;
+        const defaultBranch = String(project.default_branch ?? "main");
+        const ref = encodeURIComponent(defaultBranch);
+
+        const languages = await gitlabGet(url, token, `projects/${id}/languages`) as Record<string, number>;
+
+        const contributorsRaw = await gitlabGet(
+          url,
+          token,
+          `projects/${id}/repository/contributors?order_by=commits&sort=desc&per_page=20`,
+        ) as Array<Record<string, unknown>>;
+
+        const treeRaw = await gitlabGet(
+          url,
+          token,
+          `projects/${id}/repository/tree?recursive=true&per_page=500&ref=${ref}`,
+        ) as Array<Record<string, unknown>>;
+
+        const treePaths = new Set(treeRaw.map((f) => String(f.path ?? "")));
+        const knownFiles: z.infer<typeof KnownFileSchema>[] = [];
+
+        for (const candidate of signalFiles) {
+          if (!treePaths.has(candidate)) continue;
+          const maxBytes = candidate === "README.md" ? MAX_README_BYTES : MAX_FILE_BYTES;
+          const result = await fetchFileRaw(url, token, id, candidate, defaultBranch, maxBytes);
+          if (result !== null) {
+            knownFiles.push({ path: candidate, ...result });
+          }
+        }
+
+        const data: z.infer<typeof RepoScanSchema> = {
+          path: projectPath,
+          name: String(project.name ?? ""),
+          description: (project.description as string | null) ?? null,
+          defaultBranch,
+          lastActivityAt: String(project.last_activity_at ?? ""),
+          visibility: String(project.visibility ?? ""),
+          languages,
+          starCount: Number(project.star_count ?? 0),
+          forksCount: Number(project.forks_count ?? 0),
+          topics: (project.topics as string[] | undefined) ?? [],
+          contributors: contributorsRaw.map((c) => ({
+            name: String(c.name ?? ""),
+            email: String(c.email ?? ""),
+            commits: Number(c.commits ?? 0),
+          })),
+          fileTree: treeRaw.map((f) => ({
+            path: String(f.path ?? ""),
+            type: (f.type === "tree" ? "tree" : "blob") as "blob" | "tree",
+          })),
+          knownFiles,
+          scannedAt: new Date().toISOString(),
+        };
+
+        context.logger.info(
+          "Scan complete: {files} tree entries, {known} known files",
+          { files: data.fileTree.length, known: data.knownFiles.length },
+        );
+
+        const handle = await context.writeResource("scan", projectPath, data);
+        return { dataHandles: [handle] };
+      },
+    },
+
+    fetch_files: {
+      description:
+        "Fetch raw content of specific files by path. Use after scan to retrieve " +
+        "content of files spotted in the file tree that are not in the high-signal list.",
+      arguments: z.object({
+        projectPath: z.string().describe("Repository path (e.g. myorg/myrepo)"),
+        branch: z
+          .string()
+          .optional()
+          .describe("Branch to read from (defaults to default branch)"),
+        paths: z
+          .array(z.string())
+          .describe("File paths relative to repo root"),
+      }),
+      // deno-lint-ignore no-explicit-any
+      execute: async (
+        args: { projectPath: string; branch?: string; paths: string[] },
+        context: any,
+      ) => {
+        const { url, token } = context.globalArgs as z.infer<typeof GlobalArgsSchema>;
+        const id = encodeURIComponent(args.projectPath);
+
+        let branch = args.branch;
+        if (!branch) {
+          const project = await gitlabGet(url, token, `projects/${id}`) as Record<string, unknown>;
+          branch = String(project.default_branch ?? "main");
+        }
+
+        context.logger.info(
+          "Fetching {count} files from {path}",
+          { count: args.paths.length, path: args.projectPath },
+        );
+
+        const files: z.infer<typeof FetchedFileSchema>[] = [];
+        for (const path of args.paths) {
+          const result = await fetchFileRaw(url, token, id, path, branch, MAX_FILE_BYTES);
+          if (result === null) {
+            files.push({ path, content: null, error: "not found or not readable", truncated: false });
+          } else {
+            files.push({ path, content: result.content, truncated: result.truncated });
+          }
+        }
+
+        const data: z.infer<typeof FetchFilesResultSchema> = {
+          path: args.projectPath,
+          files,
+          fetchedAt: new Date().toISOString(),
+        };
+
+        const handle = await context.writeResource("files", args.projectPath, data);
+        return { dataHandles: [handle] };
+      },
+    },
+  },
+};
