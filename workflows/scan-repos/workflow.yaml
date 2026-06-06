@@ -1,0 +1,59 @@
+name: scan-repos
+version: 1
+description: >
+  Discover and scan GitLab repositories. When repos are provided as input,
+  scans those directly. When omitted, runs discovery first to find active
+  repos, then scans each one. Produces versioned scan data per repo for
+  downstream consumers (ferret, correlator).
+
+inputs:
+  properties:
+    repos:
+      type: array
+      items: { type: string }
+      description: >
+        Explicit list of repo paths to scan. If omitted, the workflow
+        discovers active repos first using the discover method.
+    groups:
+      type: array
+      items: { type: string }
+      description: Limit discovery to these group paths (e.g. ["o11n", "appsvc"])
+    activeSince:
+      type: string
+      description: ISO date — only discover repos active after this date (default: 90 days ago)
+
+jobs:
+  - name: discover
+    description: Find active repos (skipped if repos input is provided)
+    condition: ${{ !inputs.repos }}
+    steps:
+      - name: discover-repos
+        task:
+          type: model_method
+          modelIdOrName: repo-scanner
+          methodName: discover
+          inputs:
+            groups: ${{ inputs.groups }}
+            activeSince: ${{ inputs.activeSince }}
+
+  - name: scan
+    description: Scan each repo in parallel
+    dependsOn:
+      - job: discover
+        condition:
+          type: completed
+    steps:
+      - name: scan-${{ self.repo.path }}
+        forEach:
+          item: repo
+          in: ${{ inputs.repos || data.latest("repo-scanner", "discovery").attributes.repos }}
+        task:
+          type: model_method
+          modelIdOrName: repo-scanner
+          methodName: scan
+          inputs:
+            projectPath: ${{ self.repo.path || self.repo }}
+          dataOutputOverrides:
+            - specName: scan
+              vary:
+                - projectPath

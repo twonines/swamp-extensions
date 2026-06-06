@@ -1,7 +1,7 @@
 // ABOUTME: Scans a GitLab repository and returns structured metadata,
 // ABOUTME: a recursive file tree, and the contents of high-signal files.
 // ABOUTME: Use fetch_files for on-demand content retrieval of paths
-// ABOUTME: discovered in the file tree.
+// ABOUTME: discovered in the file tree. Use discover to find active repos.
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
@@ -79,6 +79,23 @@ const FetchFilesResultSchema = z.object({
   fetchedAt: z.string(),
 });
 
+const DiscoveredRepoSchema = z.object({
+  path: z.string(),
+  lastActivityAt: z.string(),
+  visibility: z.string(),
+});
+
+const DiscoverResultSchema = z.object({
+  repos: z.array(DiscoveredRepoSchema),
+  totalFound: z.number(),
+  filters: z.object({
+    groups: z.array(z.string()).optional(),
+    activeSince: z.string().optional(),
+    archived: z.boolean(),
+  }),
+  discoveredAt: z.string(),
+});
+
 const MAX_FILE_BYTES = 32_768; // 32KB
 const MAX_README_BYTES = 2_048; // 2KB
 
@@ -135,7 +152,7 @@ async function fetchFileRaw(
 
 export const model = {
   type: "@twonines/gitlab-repo-scanner",
-  version: "2026.06.04.1",
+  version: "2026.06.06.1",
   description:
     "Scans a GitLab repository: returns structured metadata, a recursive file tree, " +
     "and contents of high-signal files. Use fetch_files for on-demand content " +
@@ -153,6 +170,12 @@ export const model = {
       schema: FetchFilesResultSchema,
       lifetime: "infinite" as const,
       garbageCollection: 10,
+    },
+    discovery: {
+      description: "List of discovered repos matching filters",
+      schema: DiscoverResultSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 5,
     },
   },
   methods: {
@@ -292,6 +315,100 @@ export const model = {
         };
 
         const handle = await context.writeResource("files", args.projectPath, data);
+        return { dataHandles: [handle] };
+      },
+    },
+
+    discover: {
+      description:
+        "Discover active repositories from the GitLab instance. Returns paths " +
+        "suitable as input to the scan method or a batch scan workflow.",
+      arguments: z.object({
+        groups: z
+          .array(z.string())
+          .optional()
+          .describe("Limit to these group paths (e.g. ['o11n', 'appsvc'])"),
+        activeSince: z
+          .string()
+          .optional()
+          .describe("ISO date — only repos with activity after this date (default: 90 days ago)"),
+        perPage: z
+          .number()
+          .optional()
+          .describe("Results per page (default: 100, max: 100)"),
+        maxPages: z
+          .number()
+          .optional()
+          .describe("Max pages to fetch (default: 10)"),
+      }),
+      // deno-lint-ignore no-explicit-any
+      execute: async (
+        args: { groups?: string[]; activeSince?: string; perPage?: number; maxPages?: number },
+        context: any,
+      ) => {
+        const { url, token } = context.globalArgs as z.infer<typeof GlobalArgsSchema>;
+        const perPage = Math.min(args.perPage ?? 100, 100);
+        const maxPages = args.maxPages ?? 10;
+
+        const since = args.activeSince ??
+          new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+
+        context.logger.info("Discovering repos active since {since}", { since });
+
+        const repos: z.infer<typeof DiscoveredRepoSchema>[] = [];
+
+        if (args.groups && args.groups.length > 0) {
+          for (const group of args.groups) {
+            const groupId = encodeURIComponent(group);
+            for (let page = 1; page <= maxPages; page++) {
+              const projects = await gitlabGet(
+                url, token,
+                `groups/${groupId}/projects?include_subgroups=true&archived=false` +
+                `&last_activity_after=${since}&per_page=${perPage}&page=${page}` +
+                `&order_by=last_activity_at&sort=desc`,
+              ) as Array<Record<string, unknown>>;
+              for (const p of projects) {
+                repos.push({
+                  path: String(p.path_with_namespace ?? ""),
+                  lastActivityAt: String(p.last_activity_at ?? ""),
+                  visibility: String(p.visibility ?? ""),
+                });
+              }
+              if (projects.length < perPage) break;
+            }
+          }
+        } else {
+          for (let page = 1; page <= maxPages; page++) {
+            const projects = await gitlabGet(
+              url, token,
+              `projects?archived=false&last_activity_after=${since}` +
+              `&per_page=${perPage}&page=${page}&order_by=last_activity_at&sort=desc`,
+            ) as Array<Record<string, unknown>>;
+            for (const p of projects) {
+              repos.push({
+                path: String(p.path_with_namespace ?? ""),
+                lastActivityAt: String(p.last_activity_at ?? ""),
+                visibility: String(p.visibility ?? ""),
+              });
+            }
+            if (projects.length < perPage) break;
+          }
+        }
+
+        context.logger.info("Discovered {count} repos", { count: repos.length });
+
+        const data: z.infer<typeof DiscoverResultSchema> = {
+          repos,
+          totalFound: repos.length,
+          filters: {
+            groups: args.groups,
+            activeSince: since,
+            archived: false,
+          },
+          discoveredAt: new Date().toISOString(),
+        };
+
+        const handle = await context.writeResource("discovery", "latest", data);
         return { dataHandles: [handle] };
       },
     },
