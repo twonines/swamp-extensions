@@ -4,7 +4,8 @@ description: >
   Discover and scan GitLab repositories. When repos are provided as input,
   scans those directly. When omitted, runs discovery first to find active
   repos, then scans each one. Produces versioned scan data per repo for
-  downstream consumers (ferret, correlator).
+  downstream consumption — typically by agents loading the @twonines/fact-store
+  propose-facts skill, but the data is source-of-truth for any consumer.
 
 inputs:
   properties:

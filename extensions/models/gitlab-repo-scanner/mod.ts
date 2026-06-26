@@ -260,7 +260,7 @@ export const model = {
           { files: data.fileTree.length, known: data.knownFiles.length },
         );
 
-        const handle = await context.writeResource("scan", projectPath, data);
+        const handle = await context.writeResource("scan", projectPath.replaceAll("/", "--"), data);
         return { dataHandles: [handle] };
       },
     },
@@ -314,7 +314,101 @@ export const model = {
           fetchedAt: new Date().toISOString(),
         };
 
-        const handle = await context.writeResource("files", args.projectPath, data);
+        const handle = await context.writeResource("files", args.projectPath.replaceAll("/", "--"), data);
+        return { dataHandles: [handle] };
+      },
+    },
+
+    discover: {
+      description:
+        "Discover active repositories from the GitLab instance. Returns paths " +
+        "suitable as input to the scan method or a batch scan workflow.",
+      arguments: z.object({
+        groups: z
+          .array(z.string())
+          .optional()
+          .describe("Limit to these group paths (e.g. ['o11n', 'appsvc'])"),
+        activeSince: z
+          .string()
+          .optional()
+          .describe("ISO date — only repos with activity after this date (default: 90 days ago)"),
+        perPage: z
+          .number()
+          .optional()
+          .describe("Results per page (default: 100, max: 100)"),
+        maxPages: z
+          .number()
+          .optional()
+          .describe("Max pages to fetch (default: 10)"),
+      }),
+      // deno-lint-ignore no-explicit-any
+      execute: async (
+        args: { groups?: string[]; activeSince?: string; perPage?: number; maxPages?: number },
+        context: any,
+      ) => {
+        const { url, token } = context.globalArgs as z.infer<typeof GlobalArgsSchema>;
+        const perPage = Math.min(args.perPage ?? 100, 100);
+        const maxPages = args.maxPages ?? 10;
+
+        const since = args.activeSince ??
+          new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+
+        context.logger.info("Discovering repos active since {since}", { since });
+
+        const repos: z.infer<typeof DiscoveredRepoSchema>[] = [];
+
+        if (args.groups && args.groups.length > 0) {
+          for (const group of args.groups) {
+            const groupId = encodeURIComponent(group);
+            for (let page = 1; page <= maxPages; page++) {
+              const projects = await gitlabGet(
+                url, token,
+                `groups/${groupId}/projects?include_subgroups=true&archived=false` +
+                `&last_activity_after=${since}&per_page=${perPage}&page=${page}` +
+                `&order_by=last_activity_at&sort=desc`,
+              ) as Array<Record<string, unknown>>;
+              for (const p of projects) {
+                repos.push({
+                  path: String(p.path_with_namespace ?? ""),
+                  lastActivityAt: String(p.last_activity_at ?? ""),
+                  visibility: String(p.visibility ?? ""),
+                });
+              }
+              if (projects.length < perPage) break;
+            }
+          }
+        } else {
+          for (let page = 1; page <= maxPages; page++) {
+            const projects = await gitlabGet(
+              url, token,
+              `projects?archived=false&last_activity_after=${since}` +
+              `&per_page=${perPage}&page=${page}&order_by=last_activity_at&sort=desc`,
+            ) as Array<Record<string, unknown>>;
+            for (const p of projects) {
+              repos.push({
+                path: String(p.path_with_namespace ?? ""),
+                lastActivityAt: String(p.last_activity_at ?? ""),
+                visibility: String(p.visibility ?? ""),
+              });
+            }
+            if (projects.length < perPage) break;
+          }
+        }
+
+        context.logger.info("Discovered {count} repos", { count: repos.length });
+
+        const data: z.infer<typeof DiscoverResultSchema> = {
+          repos,
+          totalFound: repos.length,
+          filters: {
+            groups: args.groups,
+            activeSince: since,
+            archived: false,
+          },
+          discoveredAt: new Date().toISOString(),
+        };
+
+        const handle = await context.writeResource("discovery", "latest", data);
         return { dataHandles: [handle] };
       },
     },
