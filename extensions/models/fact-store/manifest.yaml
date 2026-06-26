@@ -1,0 +1,35 @@
+manifestVersion: 1
+name: "@twonines/fact-store"
+version: "2026.06.26.1"
+description: >
+  Stores, validates, and serves organizational facts for AI agent
+  consumption. Supports a propose→review→activate lifecycle with
+  adversarial validation (ferret/mole pattern). Facts are relational
+  truths about infrastructure, repositories, services, teams, and
+  their connections. Ships with two agent skills (propose-facts and
+  review-proposals) that drive the discovery and review loops.
+repository: "https://codeberg.org/twonines/swamp-extensions"
+paths:
+  base: manifest
+models:
+  - mod.ts
+skills:
+  - propose-facts
+  - review-proposals
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - DESIGN.md
+  - AUTHORITY_TIERS.md
+labels:
+  - facts
+  - knowledge
+  - truth
+  - agent-context
+  - adversarial-review
+  - skills
+dependencies: []

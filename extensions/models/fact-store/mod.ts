@@ -1,0 +1,738 @@
+// ABOUTME: Stores, validates, and serves organizational facts for AI agent
+// ABOUTME: consumption. Facts are relational truths about infrastructure,
+// ABOUTME: repositories, services, teams, and their connections. Supports a
+// ABOUTME: propose→review→activate lifecycle with adversarial validation.
+import { z } from "zod";
+
+// ---------------------------------------------------------------------------
+// Schemas
+// ---------------------------------------------------------------------------
+
+const SubjectRefSchema = z.object({
+  refType: z.string().describe(
+    "Entity type: repository, aws_account, k8s_cluster, service, team, etc.",
+  ),
+  identityKind: z.string().describe(
+    "Identity format: gitlab_path, account_id, cluster_name, etc.",
+  ),
+  identityValue: z.string().describe("The identity value itself"),
+});
+
+// Evidence tier — see AUTHORITY_TIERS.md for the full framework, principles,
+// and adversarial questions. Higher tiers (lower numeric values) override
+// lower-tier sources for the same claim.
+const AuthorityBasisSchema = z.enum([
+  "live_system_verification", // Tier 0 — queried running system at a moment
+  "file_is_the_mechanism", // Tier 1 — a system enforces behavior by reading this file
+  "file_content_observation", // Tier 2 — file references external state that could be stale
+  "human_claim_in_file", // Tier 3a — a human's claim recorded in a file
+  "human_claim_in_ticket", // Tier 3b — a human's claim recorded in a ticket/record
+  "agent_inference", // Tier 4 — logical conclusion from indirect evidence
+]).describe(
+  "Evidence tier (see AUTHORITY_TIERS.md). One of: live_system_verification, file_is_the_mechanism, file_content_observation, human_claim_in_file, human_claim_in_ticket, agent_inference.",
+);
+
+const FactSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  scope: z.string(),
+  subjectRef: SubjectRefSchema,
+  value: z.unknown(),
+  authorityBasis: AuthorityBasisSchema,
+  status: z.enum(["active", "superseded", "retired"]),
+  proposedBy: z.string(),
+  activatedBy: z.string().optional(),
+  createdAt: z.string(),
+  activatedAt: z.string().optional(),
+});
+
+const ProposalSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  scope: z.string(),
+  subjectRef: SubjectRefSchema,
+  value: z.unknown(),
+  authorityBasis: AuthorityBasisSchema,
+  status: z.enum(["proposed", "activated", "rejected", "withdrawn"]),
+  proposedBy: z.string(),
+  evidence: z.array(z.string()).optional(),
+  rejectionReason: z.string().optional(),
+  createdAt: z.string(),
+  reviewedAt: z.string().optional(),
+  reviewedBy: z.string().optional(),
+});
+
+const ConstraintSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  scope: z.string(),
+  rule: z.string(),
+  rationale: z.string().optional(),
+  appliesTo: z.array(z.string()).optional(),
+  status: z.enum(["active", "retired"]),
+  createdAt: z.string(),
+});
+
+const TruthPacketSchema = z.object({
+  constraints: z.array(ConstraintSchema),
+  facts: z.array(FactSchema),
+  assembledAt: z.string(),
+  query: z.object({
+    scope: z.string().optional(),
+    hints: z.array(z.string()).optional(),
+    kinds: z.array(z.string()).optional(),
+  }),
+});
+
+const ProposalListSchema = z.object({
+  proposals: z.array(ProposalSchema),
+  total: z.number(),
+  filter: z.object({ status: z.string() }),
+});
+
+const FactListSchema = z.object({
+  facts: z.array(FactSchema),
+  total: z.number(),
+});
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function uuid(): string {
+  return crypto.randomUUID();
+}
+
+function now(): string {
+  return new Date().toISOString();
+}
+
+function factInstanceName(kind: string, identityValue: string): string {
+  return `fact--${kind}--${encodeURIComponent(identityValue)}`;
+}
+
+function proposalInstanceName(id: string): string {
+  return `proposal--${id}`;
+}
+
+function constraintInstanceName(id: string): string {
+  return `constraint--${id}`;
+}
+
+// deno-lint-ignore no-explicit-any
+type Ctx = any;
+
+// ---------------------------------------------------------------------------
+// Model
+// ---------------------------------------------------------------------------
+
+export const model = {
+  type: "@twonines/fact-store",
+  version: "2026.06.26.1",
+  description:
+    "Stores, validates, and serves organizational facts for AI agent consumption. " +
+    "Supports a propose→review→activate lifecycle with adversarial validation (ferret/mole pattern).",
+  globalArguments: z.object({}),
+  resources: {
+    fact: {
+      description: "An accepted, active truth claim about an entity",
+      schema: FactSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 5,
+    },
+    proposal: {
+      description: "A candidate fact awaiting review",
+      schema: ProposalSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 10,
+    },
+    constraint: {
+      description: "A human-curated behavioral rule",
+      schema: ConstraintSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 3,
+    },
+    "truth-packet": {
+      description: "Assembled context for agent consumption",
+      schema: TruthPacketSchema,
+      lifetime: "1h" as const,
+      garbageCollection: 5,
+    },
+    "proposal-list": {
+      description: "Filtered list of proposals",
+      schema: ProposalListSchema,
+      lifetime: "1h" as const,
+      garbageCollection: 3,
+    },
+    "fact-list": {
+      description: "Filtered list of facts",
+      schema: FactListSchema,
+      lifetime: "1h" as const,
+      garbageCollection: 3,
+    },
+  },
+  methods: {
+    propose: {
+      description:
+        "Submit a candidate fact for adversarial review. Called by discovery agents (ferret).",
+      arguments: z.object({
+        kind: z.string().describe(
+          "Fact kind (e.g. repository_deploys_to_account)",
+        ),
+        scope: z.string().default("global").describe(
+          "Scope: global or narrower",
+        ),
+        subjectRef: SubjectRefSchema,
+        value: z.unknown().describe(
+          "The fact value (string, boolean, array, or object)",
+        ),
+        authorityBasis: AuthorityBasisSchema,
+        proposedBy: z.string().describe("Agent or human identifier"),
+        evidence: z.array(z.string()).optional().describe(
+          "References to scan data or other sources",
+        ),
+      }),
+      execute: async (
+        args: {
+          kind: string;
+          scope: string;
+          subjectRef: z.infer<typeof SubjectRefSchema>;
+          value: unknown;
+          authorityBasis: z.infer<typeof AuthorityBasisSchema>;
+          proposedBy: string;
+          evidence?: string[];
+        },
+        context: Ctx,
+      ) => {
+        const id = uuid();
+        const data: z.infer<typeof ProposalSchema> = {
+          id,
+          kind: args.kind,
+          scope: args.scope,
+          subjectRef: args.subjectRef,
+          value: args.value,
+          authorityBasis: args.authorityBasis,
+          status: "proposed",
+          proposedBy: args.proposedBy,
+          evidence: args.evidence,
+          createdAt: now(),
+        };
+
+        const handle = await context.writeResource(
+          "proposal",
+          proposalInstanceName(id),
+          data,
+          {
+            tags: {
+              status: "proposed",
+              kind: args.kind,
+              scope: args.scope,
+              refType: args.subjectRef.refType,
+              identityKind: args.subjectRef.identityKind,
+              identityValue: args.subjectRef.identityValue,
+              proposedBy: args.proposedBy,
+            },
+          },
+        );
+        context.logger.info("Proposal created", {
+          id,
+          kind: args.kind,
+          subject: args.subjectRef.identityValue,
+        });
+        return { dataHandles: [handle] };
+      },
+    },
+
+    activate: {
+      description:
+        "Promote a proposal to an active fact. Called by reviewer agents (mole).",
+      arguments: z.object({
+        proposalId: z.string().describe("ID of the proposal to activate"),
+        reviewedBy: z.string().describe("Reviewer agent or human identifier"),
+      }),
+      execute: async (
+        args: { proposalId: string; reviewedBy: string },
+        context: Ctx,
+      ) => {
+        const proposal = await context.readResource(
+          proposalInstanceName(args.proposalId),
+        );
+        if (!proposal) {
+          throw new Error(`Proposal ${args.proposalId} not found`);
+        }
+        if (proposal.status !== "proposed") {
+          throw new Error(
+            `Proposal ${args.proposalId} is ${proposal.status}, cannot activate`,
+          );
+        }
+
+        // Update proposal status
+        const updatedProposal = {
+          ...proposal,
+          status: "activated",
+          reviewedAt: now(),
+          reviewedBy: args.reviewedBy,
+        };
+        await context.writeResource(
+          "proposal",
+          proposalInstanceName(args.proposalId),
+          updatedProposal,
+          {
+            tags: {
+              status: "activated",
+              kind: proposal.kind,
+              scope: proposal.scope,
+              refType: proposal.subjectRef.refType,
+              identityKind: proposal.subjectRef.identityKind,
+              identityValue: proposal.subjectRef.identityValue,
+              proposedBy: proposal.proposedBy,
+            },
+          },
+        );
+
+        // Create the fact
+        const factId = uuid();
+        const fact: z.infer<typeof FactSchema> = {
+          id: factId,
+          kind: proposal.kind,
+          scope: proposal.scope,
+          subjectRef: proposal.subjectRef,
+          value: proposal.value,
+          authorityBasis: proposal.authorityBasis,
+          status: "active",
+          proposedBy: proposal.proposedBy,
+          activatedBy: args.reviewedBy,
+          createdAt: proposal.createdAt,
+          activatedAt: now(),
+        };
+
+        const handle = await context.writeResource(
+          "fact",
+          factInstanceName(proposal.kind, proposal.subjectRef.identityValue),
+          fact,
+          {
+            tags: {
+              status: "active",
+              kind: proposal.kind,
+              scope: proposal.scope,
+              refType: proposal.subjectRef.refType,
+              identityKind: proposal.subjectRef.identityKind,
+              identityValue: proposal.subjectRef.identityValue,
+              authorityBasis: proposal.authorityBasis,
+            },
+          },
+        );
+
+        context.logger.info("Fact activated", {
+          factId,
+          kind: proposal.kind,
+          subject: proposal.subjectRef.identityValue,
+        });
+        return { dataHandles: [handle] };
+      },
+    },
+
+    reject: {
+      description:
+        "Reject a proposal with feedback. Called by reviewer agents (mole).",
+      arguments: z.object({
+        proposalId: z.string().describe("ID of the proposal to reject"),
+        reason: z.string().describe(
+          "Why this proposal was rejected — actionable feedback",
+        ),
+        reviewedBy: z.string().describe("Reviewer agent or human identifier"),
+      }),
+      execute: async (
+        args: { proposalId: string; reason: string; reviewedBy: string },
+        context: Ctx,
+      ) => {
+        const proposal = await context.readResource(
+          proposalInstanceName(args.proposalId),
+        );
+        if (!proposal) {
+          throw new Error(`Proposal ${args.proposalId} not found`);
+        }
+        if (proposal.status !== "proposed") {
+          throw new Error(
+            `Proposal ${args.proposalId} is ${proposal.status}, cannot reject`,
+          );
+        }
+
+        const updated = {
+          ...proposal,
+          status: "rejected",
+          rejectionReason: args.reason,
+          reviewedAt: now(),
+          reviewedBy: args.reviewedBy,
+        };
+
+        const handle = await context.writeResource(
+          "proposal",
+          proposalInstanceName(args.proposalId),
+          updated,
+          {
+            tags: {
+              status: "rejected",
+              kind: proposal.kind,
+              scope: proposal.scope,
+              refType: proposal.subjectRef.refType,
+              identityKind: proposal.subjectRef.identityKind,
+              identityValue: proposal.subjectRef.identityValue,
+              proposedBy: proposal.proposedBy,
+            },
+          },
+        );
+
+        context.logger.info("Proposal rejected", {
+          id: args.proposalId,
+          reason: args.reason,
+        });
+        return { dataHandles: [handle] };
+      },
+    },
+
+    withdraw: {
+      description:
+        "Retract a proposal. Called by the proposing agent after acknowledging rejection feedback.",
+      arguments: z.object({
+        proposalId: z.string().describe("ID of the proposal to withdraw"),
+      }),
+      execute: async (args: { proposalId: string }, context: Ctx) => {
+        const proposal = await context.readResource(
+          proposalInstanceName(args.proposalId),
+        );
+        if (!proposal) {
+          throw new Error(`Proposal ${args.proposalId} not found`);
+        }
+        if (proposal.status !== "proposed" && proposal.status !== "rejected") {
+          throw new Error(
+            `Proposal ${args.proposalId} is ${proposal.status}, cannot withdraw`,
+          );
+        }
+
+        const updated = { ...proposal, status: "withdrawn" };
+        const handle = await context.writeResource(
+          "proposal",
+          proposalInstanceName(args.proposalId),
+          updated,
+          {
+            tags: {
+              status: "withdrawn",
+              kind: proposal.kind,
+              scope: proposal.scope,
+              refType: proposal.subjectRef.refType,
+              identityKind: proposal.subjectRef.identityKind,
+              identityValue: proposal.subjectRef.identityValue,
+              proposedBy: proposal.proposedBy,
+            },
+          },
+        );
+
+        context.logger.info("Proposal withdrawn", { id: args.proposalId });
+        return { dataHandles: [handle] };
+      },
+    },
+
+    query: {
+      description:
+        "Assemble a truth packet of relevant constraints and facts for a given scope/task. " +
+        "Called by any agent before acting — the primary consumption interface.",
+      arguments: z.object({
+        scope: z.string().optional().describe(
+          "Repo path, service name, or entity identity to scope results",
+        ),
+        hints: z.array(z.string()).optional().describe(
+          "Task keywords for relevance matching",
+        ),
+        kinds: z.array(z.string()).optional().describe(
+          "Filter to specific fact kinds",
+        ),
+        limit: z.number().default(50).describe("Maximum facts to return"),
+      }),
+      execute: async (
+        args: {
+          scope?: string;
+          hints?: string[];
+          kinds?: string[];
+          limit: number;
+        },
+        context: Ctx,
+      ) => {
+        // Get all data for this model and filter by tags
+        const allData = await context.dataRepository.findAllForModel(
+          context.modelType,
+          context.modelId,
+        );
+
+        // Filter facts: specName=fact, status=active, scope/identity match
+        const facts = allData
+          .filter((d: { tags: Record<string, string> }) => {
+            const t = d.tags;
+            if (t.specName !== "fact" || t.status !== "active") return false;
+            if (args.scope) {
+              if (t.identityValue !== args.scope && t.scope !== args.scope) {
+                return false;
+              }
+            }
+            if (args.kinds && args.kinds.length > 0) {
+              if (!args.kinds.includes(t.kind)) return false;
+            }
+            return true;
+          })
+          .slice(0, args.limit);
+
+        // Read actual content for matched facts
+        const factContents = [];
+        for (const d of facts) {
+          const content = await context.dataRepository.getContent(
+            context.modelType,
+            context.modelId,
+            d.name,
+          );
+          if (content) {
+            try {
+              factContents.push(JSON.parse(new TextDecoder().decode(content)));
+            } catch { /* skip unparseable */ }
+          }
+        }
+
+        // Filter constraints: specName=constraint, status=active
+        const constraintData = allData
+          .filter((d: { tags: Record<string, string> }) =>
+            d.tags.specName === "constraint" && d.tags.status === "active"
+          )
+          .slice(0, 100);
+
+        const constraintContents = [];
+        for (const d of constraintData) {
+          const content = await context.dataRepository.getContent(
+            context.modelType,
+            context.modelId,
+            d.name,
+          );
+          if (content) {
+            try {
+              constraintContents.push(
+                JSON.parse(new TextDecoder().decode(content)),
+              );
+            } catch { /* skip */ }
+          }
+        }
+
+        // Filter constraints by appliesTo hints if provided
+        let filteredConstraints = constraintContents;
+        if (args.hints && args.hints.length > 0) {
+          const hintsLower = args.hints.map((h: string) => h.toLowerCase());
+          filteredConstraints = constraintContents.filter(
+            (c: z.infer<typeof ConstraintSchema>) => {
+              if (!c.appliesTo || c.appliesTo.length === 0) return true;
+              return c.appliesTo.some((a: string) =>
+                hintsLower.some((h: string) =>
+                  a.toLowerCase().includes(h) || h.includes(a.toLowerCase())
+                )
+              );
+            },
+          );
+        }
+
+        const packet: z.infer<typeof TruthPacketSchema> = {
+          constraints: filteredConstraints,
+          facts: factContents,
+          assembledAt: now(),
+          query: { scope: args.scope, hints: args.hints, kinds: args.kinds },
+        };
+
+        const handle = await context.writeResource(
+          "truth-packet",
+          `query--${(args.scope ?? "global").replaceAll("/", "--")}`,
+          packet,
+        );
+
+        context.logger.info("Truth packet assembled", {
+          facts: factContents.length,
+          constraints: filteredConstraints.length,
+        });
+        return { dataHandles: [handle] };
+      },
+    },
+
+    list_proposals: {
+      description:
+        "List proposals filtered by status. Used by mole to find work, by ferret to check rejections.",
+      arguments: z.object({
+        status: z.enum([
+          "proposed",
+          "rejected",
+          "activated",
+          "withdrawn",
+          "all",
+        ]).default("proposed"),
+        limit: z.number().default(50),
+      }),
+      execute: async (
+        args: { status: string; limit: number },
+        context: Ctx,
+      ) => {
+        const allData = await context.dataRepository.findAllForModel(
+          context.modelType,
+          context.modelId,
+        );
+
+        const matched = allData
+          .filter((d: { tags: Record<string, string> }) => {
+            const t = d.tags;
+            if (t.specName !== "proposal") return false;
+            if (args.status !== "all" && t.status !== args.status) return false;
+            return true;
+          })
+          .slice(0, args.limit);
+
+        const proposals = [];
+        for (const d of matched) {
+          const content = await context.dataRepository.getContent(
+            context.modelType,
+            context.modelId,
+            d.name,
+          );
+          if (content) {
+            try {
+              proposals.push(JSON.parse(new TextDecoder().decode(content)));
+            } catch { /* skip */ }
+          }
+        }
+
+        const result: z.infer<typeof ProposalListSchema> = {
+          proposals,
+          total: proposals.length,
+          filter: { status: args.status },
+        };
+
+        const handle = await context.writeResource(
+          "proposal-list",
+          `list--${args.status}`,
+          result,
+        );
+        return { dataHandles: [handle] };
+      },
+    },
+
+    list_facts: {
+      description: "List active facts, optionally filtered by scope or kind.",
+      arguments: z.object({
+        scope: z.string().optional().describe("Filter by scope"),
+        kind: z.string().optional().describe("Filter by fact kind"),
+        identityValue: z.string().optional().describe(
+          "Filter by subject identity",
+        ),
+        limit: z.number().default(100),
+      }),
+      execute: async (
+        args: {
+          scope?: string;
+          kind?: string;
+          identityValue?: string;
+          limit: number;
+        },
+        context: Ctx,
+      ) => {
+        const allData = await context.dataRepository.findAllForModel(
+          context.modelType,
+          context.modelId,
+        );
+
+        const matched = allData
+          .filter((d: { tags: Record<string, string> }) => {
+            const t = d.tags;
+            if (t.specName !== "fact" || t.status !== "active") return false;
+            if (args.scope && t.scope !== args.scope) return false;
+            if (args.kind && t.kind !== args.kind) return false;
+            if (args.identityValue && t.identityValue !== args.identityValue) {
+              return false;
+            }
+            return true;
+          })
+          .slice(0, args.limit);
+
+        const facts = [];
+        for (const d of matched) {
+          const content = await context.dataRepository.getContent(
+            context.modelType,
+            context.modelId,
+            d.name,
+          );
+          if (content) {
+            try {
+              facts.push(JSON.parse(new TextDecoder().decode(content)));
+            } catch { /* skip */ }
+          }
+        }
+
+        const result: z.infer<typeof FactListSchema> = {
+          facts,
+          total: facts.length,
+        };
+
+        const handle = await context.writeResource(
+          "fact-list",
+          `list--${args.kind ?? "all"}`,
+          result,
+        );
+        return { dataHandles: [handle] };
+      },
+    },
+
+    add_constraint: {
+      description:
+        "Add a behavioral constraint (human-curated rule). Not derived from evidence — authored by people.",
+      arguments: z.object({
+        kind: z.string().describe(
+          "Constraint kind: process, required_execution_path, naming_convention, security_boundary, deployment_rule",
+        ),
+        scope: z.string().default("global"),
+        rule: z.string().describe("The constraint rule text"),
+        rationale: z.string().optional().describe("Why this constraint exists"),
+        appliesTo: z.array(z.string()).optional().describe(
+          "Tags for matching: language names, tool names, repo patterns",
+        ),
+      }),
+      execute: async (
+        args: {
+          kind: string;
+          scope: string;
+          rule: string;
+          rationale?: string;
+          appliesTo?: string[];
+        },
+        context: Ctx,
+      ) => {
+        const id = uuid();
+        const data: z.infer<typeof ConstraintSchema> = {
+          id,
+          kind: args.kind,
+          scope: args.scope,
+          rule: args.rule,
+          rationale: args.rationale,
+          appliesTo: args.appliesTo,
+          status: "active",
+          createdAt: now(),
+        };
+
+        const handle = await context.writeResource(
+          "constraint",
+          constraintInstanceName(id),
+          data,
+          {
+            tags: {
+              status: "active",
+              kind: args.kind,
+              scope: args.scope,
+            },
+          },
+        );
+
+        context.logger.info("Constraint added", { id, kind: args.kind });
+        return { dataHandles: [handle] };
+      },
+    },
+  },
+};
