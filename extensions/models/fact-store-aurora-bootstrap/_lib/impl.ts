@@ -882,6 +882,25 @@ export async function grantRdsIam(
     logger.info("Granted rds_iam to master user", {
       username: masterUsername,
     });
+  } catch (err) {
+    // Aurora Postgres routes a user's authentication through PAM once
+    // `rds_iam` is granted to them — after that, password auth stops
+    // working for that user (the PAM/IAM path takes over). So "PAM
+    // authentication failed" during password login is a positive signal
+    // that rds_iam is already granted; we treat it as an idempotent no-op
+    // rather than a hard failure. This makes provision safe to re-run
+    // against a cluster that was previously granted (either by an earlier
+    // run of this bootstrap or by out-of-band manual GRANT).
+    const msg = (err as Error).message ?? "";
+    const code = (err as { code?: string }).code;
+    if (msg.includes("PAM authentication") || code === "28000") {
+      logger.info(
+        "Master user is already rds_iam-only (password auth rejected via PAM); skipping grant",
+        { username: masterUsername },
+      );
+      return;
+    }
+    throw err;
   } finally {
     await sql.end({ timeout: 5 });
   }
