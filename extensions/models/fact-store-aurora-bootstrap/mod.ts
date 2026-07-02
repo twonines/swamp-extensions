@@ -207,7 +207,7 @@ type Ctx = any;
 
 export const model = {
   type: "@twonines/fact-store-aurora-bootstrap/provisioner",
-  version: "2026.07.02.3",
+  version: "2026.07.02.4",
   description:
     "Bootstrap provisioner for @twonines/fact-store on AWS Aurora Postgres Serverless v2. " +
     "Creates the cluster, writer instance, security group, subnet group, an rds-db:connect " +
