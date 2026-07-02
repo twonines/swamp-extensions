@@ -1,6 +1,10 @@
 {
   "imports": {
     "zod": "npm:zod@4",
-    "@systeminit/swamp-testing": "jsr:@systeminit/swamp-testing"
+    "@systeminit/swamp-testing": "jsr:@systeminit/swamp-testing",
+    "@aws-sdk/client-rds": "npm:@aws-sdk/client-rds@3.1024.0",
+    "@aws-sdk/client-ec2": "npm:@aws-sdk/client-ec2@3.1024.0",
+    "@aws-sdk/client-iam": "npm:@aws-sdk/client-iam@3.1024.0",
+    "@aws-sdk/client-sts": "npm:@aws-sdk/client-sts@3.1024.0"
   }
 }

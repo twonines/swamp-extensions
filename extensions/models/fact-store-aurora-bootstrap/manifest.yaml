@@ -1,0 +1,41 @@
+manifestVersion: 1
+name: "@twonines/fact-store-aurora-bootstrap"
+version: "2026.07.02.1"
+description: >
+  One-shot bootstrap for @twonines/fact-store backed by AWS Aurora
+  Postgres Serverless v2. Provisions the RDS cluster + writer instance,
+  the enclosing VPC networking primitives (DB subnet group, security
+  group), an IAM managed policy scoped to rds-db:connect on the cluster,
+  and an IAM workload role that trusts a caller-provided principal
+  (e.g., an AWS SSO permission set ARN). A companion workflow runs the
+  provisioner and then configures @webframp/postgres-datastore against
+  the newly created cluster using a fresh RDS IAM auth token.
+
+  Prerequisites:
+  - AWS credentials in the default credential chain with permissions to
+    create RDS subnet groups, RDS clusters/instances, EC2 security
+    groups, IAM roles, and IAM managed policies in the target account.
+  - An existing VPC and at least two subnets in different AZs.
+  - The caller principal (or the workload role once assumed) will need
+    the rds-db:connect managed policy attached to actually use the
+    cluster after provisioning.
+repository: "https://codeberg.org/twonines/swamp-extensions"
+paths:
+  base: manifest
+models:
+  - mod.ts
+workflows:
+  - bootstrap.yaml
+dependencies:
+  - "@twonines/fact-store"
+  - "@webframp/postgres-datastore"
+additionalFiles:
+  - README.md
+labels:
+  - aurora
+  - postgres
+  - rds
+  - iam
+  - bootstrap
+  - fact-store
+  - swamp-as-iac
