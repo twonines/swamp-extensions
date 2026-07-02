@@ -40,6 +40,11 @@ import {
   ListAttachedRolePoliciesCommand,
 } from "@aws-sdk/client-iam";
 import { GetCallerIdentityCommand, type STSClient } from "@aws-sdk/client-sts";
+import {
+  GetSecretValueCommand,
+  type SecretsManagerClient,
+} from "@aws-sdk/client-secrets-manager";
+import postgres from "postgres";
 
 export interface Logger {
   info: (msg: string, props?: Record<string, unknown>) => void;
@@ -281,6 +286,7 @@ export interface ClusterOutputs {
   cluster_endpoint: string;
   cluster_port: number;
   cluster_resource_id: string;
+  master_user_secret_arn: string | undefined;
 }
 
 /**
@@ -405,6 +411,7 @@ export async function ensureCluster(
         cluster_endpoint: endpoint,
         cluster_port: port,
         cluster_resource_id: resourceId,
+        master_user_secret_arn: cluster.MasterUserSecret?.SecretArn,
       };
     }
     if (cluster.Status === "failed") {
@@ -782,4 +789,100 @@ export async function attachPolicyToRole(
       PolicyArn: policyArn,
     }),
   );
+}
+
+/**
+ * Grant the `rds_iam` role to the master user so IAM DB authentication
+ * actually works.
+ *
+ * Background: `CreateDBCluster` with `EnableIAMDatabaseAuthentication=true`
+ * enables the IAM auth backend on the cluster, but it does NOT grant the
+ * `rds_iam` role to the master user — the master user remains a normal
+ * password-auth user unless something explicitly grants `rds_iam`. AWS's
+ * Cloud Control API for `AWS::RDS::DBCluster` handles this server-side when
+ * you set `MasterUserAuthenticationType: iam-db-auth`; the direct RDS SDK
+ * (which this bootstrap uses) does not, so we grant it here as part of
+ * provisioning.
+ *
+ * Runs idempotently — Postgres `GRANT` is a no-op when the grant already
+ * exists.
+ *
+ * Requires: cluster in `available` status, writer instance in `available`
+ * status (endpoint must be reachable), and `MasterUserSecret` populated
+ * (implies the cluster was created with `ManageMasterUserPassword=true`
+ * — the case for clusters our bootstrap creates). Adopted clusters that
+ * were provisioned some other way without a MasterUserSecret get a warning
+ * and the grant is skipped; the operator must handle the grant manually.
+ */
+export async function grantRdsIam(
+  sm: SecretsManagerClient,
+  cluster: ClusterOutputs,
+  masterUsername: string,
+  logger: Logger,
+): Promise<void> {
+  if (!cluster.master_user_secret_arn) {
+    logger.warning(
+      "Cluster has no MasterUserSecret; skipping rds_iam grant. If IAM DB " +
+        "auth is required, the operator must grant rds_iam to the master " +
+        "user manually.",
+      { cluster: cluster.cluster_endpoint },
+    );
+    return;
+  }
+
+  const secret = await sm.send(
+    new GetSecretValueCommand({ SecretId: cluster.master_user_secret_arn }),
+  );
+  if (!secret.SecretString) {
+    throw new Error(
+      `Secrets Manager returned empty SecretString for ` +
+        `${cluster.master_user_secret_arn}`,
+    );
+  }
+  const parsed = JSON.parse(secret.SecretString) as { password?: string };
+  if (!parsed.password) {
+    throw new Error(
+      `Master user secret ${cluster.master_user_secret_arn} does not ` +
+        `contain a password field`,
+    );
+  }
+
+  // Fetch the RDS global CA bundle so we can require TLS with cert
+  // verification. Bundle is publicly published by AWS and rotates
+  // infrequently; fetching at runtime keeps the extension self-contained
+  // (no need to embed / update a copy in source).
+  const caResp = await fetch(
+    "https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem",
+  );
+  if (!caResp.ok) {
+    throw new Error(
+      `Failed to fetch RDS global CA bundle: HTTP ${caResp.status}`,
+    );
+  }
+  const ca = await caResp.text();
+
+  logger.info("Connecting to master user to grant rds_iam", {
+    username: masterUsername,
+    endpoint: cluster.cluster_endpoint,
+  });
+
+  const sql = postgres({
+    host: cluster.cluster_endpoint,
+    port: cluster.cluster_port,
+    database: "postgres",
+    username: masterUsername,
+    password: parsed.password,
+    ssl: { ca },
+  });
+  try {
+    // Identifier is safe here — the schema-validated masterUsername regex
+    // (^[a-zA-Z][a-zA-Z0-9_]{0,62}$) excludes any character that would
+    // change the meaning of the quoted identifier below.
+    await sql.unsafe(`GRANT rds_iam TO "${masterUsername}"`);
+    logger.info("Granted rds_iam to master user", {
+      username: masterUsername,
+    });
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
 }

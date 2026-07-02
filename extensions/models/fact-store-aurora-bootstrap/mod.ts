@@ -18,6 +18,7 @@ import { RDSClient } from "@aws-sdk/client-rds";
 import { EC2Client } from "@aws-sdk/client-ec2";
 import { IAMClient } from "@aws-sdk/client-iam";
 import { STSClient } from "@aws-sdk/client-sts";
+import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import {
   attachPolicyToRole,
   ensureCluster,
@@ -27,6 +28,7 @@ import {
   ensureSubnetGroup,
   ensureWorkloadRole,
   type GlobalArgs,
+  grantRdsIam,
   verifyCallerIdentity,
 } from "./_lib/impl.ts";
 
@@ -173,6 +175,15 @@ export const StateSchema = z.object({
       "DbClusterResourceId (cluster-XYZ) — this is the ID used in " +
         "rds-db:connect resource ARNs",
     ),
+  master_user_secret_arn: z
+    .string()
+    .optional()
+    .describe(
+      "Secrets Manager ARN holding the cluster's master password " +
+        "(populated when the cluster was created with " +
+        "ManageMasterUserPassword=true; undefined for adopted clusters " +
+        "created by some other mechanism).",
+    ),
   instance_identifier: z.string(),
   instance_arn: z.string(),
   security_group_id: z.string(),
@@ -196,7 +207,7 @@ type Ctx = any;
 
 export const model = {
   type: "@twonines/fact-store-aurora-bootstrap/provisioner",
-  version: "2026.07.02.2",
+  version: "2026.07.02.3",
   description:
     "Bootstrap provisioner for @twonines/fact-store on AWS Aurora Postgres Serverless v2. " +
     "Creates the cluster, writer instance, security group, subnet group, an rds-db:connect " +
@@ -229,6 +240,7 @@ export const model = {
         const rds = new RDSClient({ region: g.region });
         const ec2 = new EC2Client({ region: g.region });
         const iam = new IAMClient({ region: g.region });
+        const sm = new SecretsManagerClient({ region: g.region });
 
         // Safety guard: verify AWS caller identity matches the workflow's
         // declared account_id before mutating any resources.
@@ -251,6 +263,11 @@ export const model = {
         // Writer instance — blocks until available (can take several minutes
         // for db.serverless on first creation).
         const instance = await ensureInstance(rds, g, logger);
+
+        // Grant rds_iam to the master user. Required for IAM DB auth to
+        // actually work — CreateDBCluster does not do this automatically.
+        // Idempotent (Postgres GRANT is a no-op when already granted).
+        await grantRdsIam(sm, cluster, g.master_username, logger);
 
         // IAM managed policy scoped to `rds-db:connect` on the specific
         // dbuser ARN. Needs the cluster resource ID (not name) so it survives
@@ -283,6 +300,7 @@ export const model = {
           cluster_port: cluster.cluster_port,
           cluster_arn: cluster.cluster_arn,
           cluster_resource_id: cluster.cluster_resource_id,
+          master_user_secret_arn: cluster.master_user_secret_arn,
           instance_identifier: instance.instance_identifier,
           instance_arn: instance.instance_arn,
           security_group_id: securityGroupId,
