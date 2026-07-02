@@ -107,11 +107,11 @@ jobs:
             run: >-
               set -euo pipefail;
               TOKEN=$(aws rds generate-db-auth-token
-              --hostname "${{ data.latest("fact-store-aurora-provisioner", "fact-store-aurora-provisioner").attributes.cluster_endpoint }}"
+              --hostname "${{ data.latest("fact-store-aurora-provisioner", "state").attributes.cluster_endpoint }}"
               --port 5432
               --username "${{ inputs.master_username }}"
               --region "${{ inputs.region }}");
               ENCODED=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$TOKEN");
-              CONN="postgres://${{ inputs.master_username }}:$ENCODED@${{ data.latest("fact-store-aurora-provisioner", "fact-store-aurora-provisioner").attributes.cluster_endpoint }}:5432/postgres";
+              CONN="postgres://${{ inputs.master_username }}:$ENCODED@${{ data.latest("fact-store-aurora-provisioner", "state").attributes.cluster_endpoint }}:5432/postgres";
               CONFIG=$(python3 -c "import json,sys; print(json.dumps({'connectionString': sys.argv[1], 'schema': sys.argv[2], 'ssl': 'verify-ca', 'sslCaPath': sys.argv[3]}))" "$CONN" "${{ inputs.datastore_schema }}" "${{ inputs.ssl_ca_path }}");
               swamp datastore setup extension @webframp/postgres-datastore --config "$CONFIG" --json
