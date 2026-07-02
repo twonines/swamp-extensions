@@ -50,7 +50,7 @@ haven't seen, fetch them before proposing.
 - Other repos: run `repo-scanner scan` against them
 
 Follow reference chains. If `helm/values.yaml` mentions account
-`210266747510`, look for where that ID is bound — `.gitlab-ci.yml`
+`123456789012`, look for where that ID is bound — `.gitlab-ci.yml`
 variables, terraform outputs, a sibling repo's config. The chain itself
 is often the fact worth recording.
 
@@ -60,7 +60,7 @@ Cap each round of follow-ups at ~5 files. Prioritize highest signal.
 
 Every proposal carries an `authorityBasis` enum value. The full framework
 (tier definitions, principles, scope rules, decay) lives in
-[AUTHORITY_TIERS.md](../../AUTHORITY_TIERS.md). Brief vocabulary:
+[references/authority-tiers.md](references/authority-tiers.md). Brief vocabulary:
 
 | Basis | Tier | One-line gloss |
 |---|---|---|
@@ -79,7 +79,7 @@ you're claiming — not just mention it.
 
 **Scope matters.** The same file can be Tier 1 for one claim and Tier 2
 for another. `.gitlab-ci.yml` is Tier 1 for "this repo runs CI through
-GitLab" but Tier 2 for "this repo deploys to account 210266747510" — the
+GitLab" but Tier 2 for "this repo deploys to account 123456789012" — the
 file references the account, doesn't create it. Evaluate evidence in
 light of the specific claim.
 

@@ -44,7 +44,7 @@ For every proposal, check four things:
 ### 1. Authority basis honesty
 
 Every proposal carries an `authorityBasis` enum value. The full
-framework lives in [AUTHORITY_TIERS.md](../../AUTHORITY_TIERS.md). The
+framework lives in [references/authority-tiers.md](references/authority-tiers.md). The
 six valid bases (lowest tier number = strongest evidence):
 
 | Basis | Tier | When it's honest |
@@ -79,7 +79,7 @@ file type.
 Open the cited evidence files. Does the value actually appear there, in
 the form claimed?
 
-- A claim of `value: "210266747510"` requires that ID to appear in at
+- A claim of `value: "123456789012"` requires that ID to appear in at
   least one of the cited files
 - A claim of mechanism (`mechanism: "helm chart values reference"`)
   requires you to see helm files and a values reference
@@ -111,7 +111,7 @@ store, reject with a reference to the existing fact.
 ## Adversarial questions
 
 Apply the questions that match the proposal's claimed tier. The full
-list is in [AUTHORITY_TIERS.md](../../AUTHORITY_TIERS.md); the
+list is in [references/authority-tiers.md](references/authority-tiers.md); the
 operational subset:
 
 **For any tier:**
@@ -186,7 +186,7 @@ actionable:
 
 - BAD: `"wrong"`
 - BAD: `"evidence weak"`
-- GOOD: `"Account ID 210266747510 not found in .gitlab-ci.yml — only in helm/values.yaml. Authority basis should be file_content_observation, not file_is_the_mechanism."`
+- GOOD: `"Account ID 123456789012 not found in .gitlab-ci.yml — only in helm/values.yaml. Authority basis should be file_content_observation, not file_is_the_mechanism."`
 - GOOD: `"Claim too vague. 'uses helm' is in scan languages already. Need specific mechanism — chart path, values structure, who consumes the output."`
 
 ## When in doubt, reject

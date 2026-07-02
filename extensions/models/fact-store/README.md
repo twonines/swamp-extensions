@@ -20,7 +20,7 @@ swamp model create @twonines/fact-store facts
 swamp model method run facts propose \
   --input kind=repository_deploys_to_account \
   --input 'subjectRef={"refType":"repository","identityKind":"gitlab_path","identityValue":"appsvc/mesh-gateway"}' \
-  --input 'value="210266747510"' \
+  --input 'value="123456789012"' \
   --input authorityBasis=file_content_observation \
   --input proposedBy=ferret
 
