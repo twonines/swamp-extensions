@@ -44,6 +44,7 @@ import {
   GetSecretValueCommand,
   type SecretsManagerClient,
 } from "@aws-sdk/client-secrets-manager";
+import { Signer } from "@aws-sdk/rds-signer";
 import postgres from "postgres";
 
 export interface Logger {
@@ -804,27 +805,94 @@ export async function attachPolicyToRole(
  * (which this bootstrap uses) does not, so we grant it here as part of
  * provisioning.
  *
- * Runs idempotently — Postgres `GRANT` is a no-op when the grant already
- * exists.
+ * Idempotent detection strategy: try to connect via IAM auth first (using
+ * a freshly-generated auth token for the master user). If that succeeds,
+ * `rds_iam` is already granted and we're done — skip. If IAM auth fails,
+ * fall back to the master password (fetched from Secrets Manager) and
+ * run the GRANT.
+ *
+ * The IAM-first probe avoids a real problem observed in practice: once
+ * `rds_iam` is granted to a user in Aurora Postgres, that user's connections
+ * are routed through PAM (IAM) authentication, and password auth stops
+ * working. Attempting password auth on such a user produces a "PAM
+ * authentication failed" error that is surfaced through postgres.js's
+ * event/promise machinery in a way that can slip past a query-level
+ * try/catch. Trying IAM auth first bypasses that hazard when the grant
+ * is already in place.
  *
  * Requires: cluster in `available` status, writer instance in `available`
- * status (endpoint must be reachable), and `MasterUserSecret` populated
- * (implies the cluster was created with `ManageMasterUserPassword=true`
- * — the case for clusters our bootstrap creates). Adopted clusters that
- * were provisioned some other way without a MasterUserSecret get a warning
- * and the grant is skipped; the operator must handle the grant manually.
+ * status (endpoint must be reachable), `MasterUserSecret` populated for
+ * the password-fallback path. Adopted clusters without a MasterUserSecret
+ * fall back to warning-and-skip.
  */
 export async function grantRdsIam(
   sm: SecretsManagerClient,
   cluster: ClusterOutputs,
+  region: string,
   masterUsername: string,
   logger: Logger,
 ): Promise<void> {
+  // Fetch the RDS global CA bundle once for both auth attempts.
+  const caResp = await fetch(
+    "https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem",
+  );
+  if (!caResp.ok) {
+    throw new Error(
+      `Failed to fetch RDS global CA bundle: HTTP ${caResp.status}`,
+    );
+  }
+  const ca = await caResp.text();
+
+  // --- Probe 1: try IAM auth. If it succeeds, rds_iam is already granted. ---
+  const signer = new Signer({
+    hostname: cluster.cluster_endpoint,
+    port: cluster.cluster_port,
+    username: masterUsername,
+    region,
+    // Signer defaults to the ambient AWS credentials the RDS client uses.
+  });
+  const iamToken = await signer.getAuthToken();
+
+  logger.info("Probing IAM auth to detect existing rds_iam grant", {
+    username: masterUsername,
+    endpoint: cluster.cluster_endpoint,
+  });
+  const iamSql = postgres({
+    host: cluster.cluster_endpoint,
+    port: cluster.cluster_port,
+    database: "postgres",
+    username: masterUsername,
+    password: iamToken,
+    ssl: { ca },
+  });
+  let iamOk = false;
+  try {
+    await iamSql`SELECT 1`;
+    iamOk = true;
+  } catch (err) {
+    const msg = (err as Error).message ?? "";
+    logger.info(
+      "IAM auth probe failed — assuming rds_iam not yet granted; will fall back to password auth",
+      { probeError: msg },
+    );
+  } finally {
+    await iamSql.end({ timeout: 5 });
+  }
+
+  if (iamOk) {
+    logger.info(
+      "IAM auth succeeded — rds_iam is already granted, no work to do",
+      { username: masterUsername },
+    );
+    return;
+  }
+
+  // --- Fallback: password auth via Secrets Manager, then GRANT rds_iam. ---
   if (!cluster.master_user_secret_arn) {
     logger.warning(
-      "Cluster has no MasterUserSecret; skipping rds_iam grant. If IAM DB " +
-        "auth is required, the operator must grant rds_iam to the master " +
-        "user manually.",
+      "Cluster has no MasterUserSecret and IAM auth probe failed. Skipping " +
+        "rds_iam grant — the operator must grant it manually if IAM DB " +
+        "auth is required.",
       { cluster: cluster.cluster_endpoint },
     );
     return;
@@ -847,26 +915,12 @@ export async function grantRdsIam(
     );
   }
 
-  // Fetch the RDS global CA bundle so we can require TLS with cert
-  // verification. Bundle is publicly published by AWS and rotates
-  // infrequently; fetching at runtime keeps the extension self-contained
-  // (no need to embed / update a copy in source).
-  const caResp = await fetch(
-    "https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem",
-  );
-  if (!caResp.ok) {
-    throw new Error(
-      `Failed to fetch RDS global CA bundle: HTTP ${caResp.status}`,
-    );
-  }
-  const ca = await caResp.text();
-
-  logger.info("Connecting to master user to grant rds_iam", {
+  logger.info("Connecting via master password to grant rds_iam", {
     username: masterUsername,
     endpoint: cluster.cluster_endpoint,
   });
 
-  const sql = postgres({
+  const pwSql = postgres({
     host: cluster.cluster_endpoint,
     port: cluster.cluster_port,
     database: "postgres",
@@ -875,33 +929,11 @@ export async function grantRdsIam(
     ssl: { ca },
   });
   try {
-    // Identifier is safe here — the schema-validated masterUsername regex
-    // (^[a-zA-Z][a-zA-Z0-9_]{0,62}$) excludes any character that would
-    // change the meaning of the quoted identifier below.
-    await sql.unsafe(`GRANT rds_iam TO "${masterUsername}"`);
+    await pwSql.unsafe(`GRANT rds_iam TO "${masterUsername}"`);
     logger.info("Granted rds_iam to master user", {
       username: masterUsername,
     });
-  } catch (err) {
-    // Aurora Postgres routes a user's authentication through PAM once
-    // `rds_iam` is granted to them — after that, password auth stops
-    // working for that user (the PAM/IAM path takes over). So "PAM
-    // authentication failed" during password login is a positive signal
-    // that rds_iam is already granted; we treat it as an idempotent no-op
-    // rather than a hard failure. This makes provision safe to re-run
-    // against a cluster that was previously granted (either by an earlier
-    // run of this bootstrap or by out-of-band manual GRANT).
-    const msg = (err as Error).message ?? "";
-    const code = (err as { code?: string }).code;
-    if (msg.includes("PAM authentication") || code === "28000") {
-      logger.info(
-        "Master user is already rds_iam-only (password auth rejected via PAM); skipping grant",
-        { username: masterUsername },
-      );
-      return;
-    }
-    throw err;
   } finally {
-    await sql.end({ timeout: 5 });
+    await pwSql.end({ timeout: 5 });
   }
 }
