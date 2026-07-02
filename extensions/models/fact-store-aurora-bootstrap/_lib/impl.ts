@@ -66,6 +66,20 @@ export interface GlobalArgs {
   max_acu: number;
   publicly_accessible: boolean;
   backup_retention_days: number;
+  tags: Record<string, string>;
+}
+
+/**
+ * Convert a Key->Value tag map into the AWS SDK's `[{ Key, Value }, ...]`
+ * array shape used by RDS and IAM. Returns undefined for empty maps so
+ * callers can conditionally include the Tags parameter.
+ */
+export function tagList(
+  tags: Record<string, string>,
+): Array<{ Key: string; Value: string }> | undefined {
+  const entries = Object.entries(tags);
+  if (entries.length === 0) return undefined;
+  return entries.map(([Key, Value]) => ({ Key, Value }));
 }
 
 /**
@@ -154,6 +168,7 @@ export async function ensureSubnetGroup(
       DBSubnetGroupDescription:
         `Subnet group for @twonines/fact-store Aurora cluster (${g.cluster_identifier})`,
       SubnetIds: g.subnet_ids,
+      Tags: tagList(g.tags),
     }),
   );
   return g.subnet_group_name;
@@ -220,12 +235,16 @@ export async function ensureSecurityGroup(
     name: g.security_group_name,
     vpc: g.vpc_id,
   });
+  const tagSpecs = tagList(g.tags);
   const created = await ec2.send(
     new CreateSecurityGroupCommand({
       GroupName: g.security_group_name,
       Description:
         `Aurora Postgres access for @twonines/fact-store (${g.cluster_identifier})`,
       VpcId: g.vpc_id,
+      TagSpecifications: tagSpecs
+        ? [{ ResourceType: "security-group", Tags: tagSpecs }]
+        : undefined,
     }),
   );
   const groupId = created.GroupId;
@@ -318,6 +337,7 @@ export async function ensureCluster(
         },
         StorageEncrypted: true,
         BackupRetentionPeriod: g.backup_retention_days,
+        Tags: tagList(g.tags),
       }),
     );
   } else {
@@ -452,6 +472,7 @@ export async function ensureInstance(
         Engine: "aurora-postgresql",
         DBInstanceClass: "db.serverless",
         PubliclyAccessible: g.publicly_accessible,
+        Tags: tagList(g.tags),
       }),
     );
   } else {
@@ -638,6 +659,7 @@ export async function ensureManagedPolicy(
         `Grants rds-db:connect on the @twonines/fact-store Aurora cluster ` +
         `(${g.cluster_identifier}) for user ${g.master_username}`,
       PolicyDocument: document,
+      Tags: tagList(g.tags),
     }),
   );
   const arn = created.Policy?.Arn;
@@ -723,6 +745,7 @@ export async function ensureWorkloadRole(
         `cluster ${g.cluster_identifier}`,
       AssumeRolePolicyDocument: trustDoc,
       MaxSessionDuration: 3600,
+      Tags: tagList(g.tags),
     }),
   );
   const arn = created.Role?.Arn;

@@ -74,8 +74,21 @@ swamp workflow run '@twonines/bootstrap-fact-store-aurora' \
   --input vpc_id=vpc-0abc123def456ghij \
   --input 'subnet_ids=["subnet-aaa","subnet-bbb"]' \
   --input ingress_cidr=203.0.113.42/32 \
-  --input workload_role_trust_principal='arn:aws:iam::123456789012:role/AWSReservedSSO_YourPermissionSet_abc123'
+  --input workload_role_trust_principal='arn:aws:iam::123456789012:role/AWSReservedSSO_YourPermissionSet_abc123' \
+  --input 'tags={"Owner":"team-x","Environment":"prd","CostCenter":"cc-42"}'
 ```
+
+## Tagging
+
+Every newly-created AWS resource (subnet group, security group, cluster, DB
+instance, managed policy, workload role) receives the tags passed in the
+`tags` input. Provide them as a JSON object on the command line as shown
+above. Empty map (`{}`, the default) means no tags applied.
+
+Adopted (already-existing) resources are **not** modified — the bootstrap
+does not sync tag drift. To manage tags on an existing resource after
+bootstrap, use the first-party `@swamp/aws/*` types or update tags out of
+band.
 
 ## What ships in the tarball
 

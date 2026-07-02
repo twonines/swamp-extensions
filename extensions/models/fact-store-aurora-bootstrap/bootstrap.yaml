@@ -56,6 +56,17 @@ inputs:
       type: string
       default: /tmp/rds-global-bundle.pem
       description: Filesystem path to the RDS global-bundle.pem CA cert.
+    tags:
+      type: object
+      default: {}
+      description: >-
+        Optional Key -> Value map of AWS tags applied to every newly-created
+        resource (subnet group, security group, cluster, instance, managed
+        policy, workload role). Adopted (already-existing) resources are not
+        modified. Provide as JSON on the command line, e.g. --input
+        'tags={"Owner":"team-x","Environment":"prd","CostCenter":"cc-42"}'.
+      additionalProperties:
+        type: string
   required:
     - account_id
     - region
