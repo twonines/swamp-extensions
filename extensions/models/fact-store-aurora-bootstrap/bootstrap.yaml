@@ -1,0 +1,106 @@
+id: 9c7d3f5a-1e4b-4a2f-9d3c-6b0e2f8a5b7c
+name: "@twonines/bootstrap-fact-store-aurora"
+description: |
+  Provision AWS Aurora Postgres Serverless v2 + an IAM workload role for
+  @twonines/fact-store, then switch the current repo's datastore to
+  @webframp/postgres-datastore pointing at the new cluster.
+version: 1
+tags:
+  extension: "@twonines/fact-store-aurora-bootstrap"
+inputs:
+  properties:
+    account_id:
+      type: string
+      description: Expected AWS account ID (12 digits). Provisioner verifies caller identity.
+      pattern: "^\\d{12}$"
+    region:
+      type: string
+      description: AWS region for all resources.
+      pattern: "^[a-z]{2}-[a-z]+-\\d$"
+    vpc_id:
+      type: string
+      pattern: "^vpc-[0-9a-f]{8,17}$"
+    subnet_ids:
+      type: array
+      description: At least 2 subnet IDs in distinct AZs.
+      items:
+        type: string
+        pattern: "^subnet-[0-9a-f]{8,17}$"
+      minItems: 2
+    ingress_cidr:
+      type: string
+      description: IPv4 CIDR allowed on port 5432.
+      pattern: "^(?:\\d{1,3}\\.){3}\\d{1,3}/\\d{1,2}$"
+    workload_role_trust_principal:
+      type: string
+      description: ARN of the principal allowed to assume the workload role.
+      pattern: "^arn:aws:.+$"
+    master_username:
+      type: string
+      default: fact_store_admin
+      pattern: "^[a-zA-Z][a-zA-Z0-9_]{0,62}$"
+    cluster_identifier:
+      type: string
+      default: fact-store-db-cluster
+      pattern: "^[a-zA-Z][a-zA-Z0-9-]{0,62}$"
+    publicly_accessible:
+      type: boolean
+      default: false
+      description: Set true only in throwaway lab environments.
+    datastore_schema:
+      type: string
+      default: swamp
+      description: Postgres schema name for swamp tables.
+      pattern: "^[a-zA-Z_][a-zA-Z0-9_]{0,62}$"
+    ssl_ca_path:
+      type: string
+      default: /tmp/rds-global-bundle.pem
+      description: Filesystem path to the RDS global-bundle.pem CA cert.
+  required:
+    - account_id
+    - region
+    - vpc_id
+    - subnet_ids
+    - ingress_cidr
+    - workload_role_trust_principal
+jobs:
+  - name: infra
+    description: Create/verify the Aurora cluster + IAM workload role.
+    steps:
+      - name: provision
+        description: >
+          Run the provisioner model. Instance
+          `fact-store-aurora-provisioner` must be pre-created with
+          globalArguments wired to the workflow inputs.
+        task:
+          type: model_method
+          modelIdOrName: fact-store-aurora-provisioner
+          methodName: provision
+  - name: configure
+    description: Configure @webframp/postgres-datastore against the new cluster.
+    dependsOn:
+      - job: infra
+        condition:
+          type: succeeded
+    steps:
+      - name: run-setup
+        description: >
+          Generate a fresh RDS IAM auth token, assemble the connection
+          string, and run `swamp datastore setup extension
+          @webframp/postgres-datastore`.
+        task:
+          type: model_method
+          modelIdOrName: fact-store-aurora-datastore-setup
+          methodName: execute
+          inputs:
+            run: >-
+              set -euo pipefail;
+              TOKEN=$(aws rds generate-db-auth-token
+              --hostname "${{ data.latest("fact-store-aurora-provisioner", "fact-store-aurora-provisioner").attributes.cluster_endpoint }}"
+              --port 5432
+              --username "${{ inputs.master_username }}"
+              --region "${{ inputs.region }}");
+              ENCODED=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$TOKEN");
+              CONN="postgres://${{ inputs.master_username }}:$ENCODED@${{ data.latest("fact-store-aurora-provisioner", "fact-store-aurora-provisioner").attributes.cluster_endpoint }}:5432/postgres";
+              CONFIG=$(python3 -c "import json,sys; print(json.dumps({'connectionString': sys.argv[1], 'schema': sys.argv[2], 'ssl': 'verify-ca', 'sslCaPath': sys.argv[3]}))" "$CONN" "${{ inputs.datastore_schema }}" "${{ inputs.ssl_ca_path }}");
+              swamp datastore setup extension @webframp/postgres-datastore --config "$CONFIG" --json
