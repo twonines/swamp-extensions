@@ -207,7 +207,7 @@ type Ctx = any;
 
 export const model = {
   type: "@twonines/fact-store-aurora-bootstrap/provisioner",
-  version: "2026.07.02.4",
+  version: "2026.07.02.5",
   description:
     "Bootstrap provisioner for @twonines/fact-store on AWS Aurora Postgres Serverless v2. " +
     "Creates the cluster, writer instance, security group, subnet group, an rds-db:connect " +
@@ -267,7 +267,13 @@ export const model = {
         // Grant rds_iam to the master user. Required for IAM DB auth to
         // actually work — CreateDBCluster does not do this automatically.
         // Idempotent (Postgres GRANT is a no-op when already granted).
-        await grantRdsIam(sm, cluster, g.master_username, logger);
+        await grantRdsIam(
+          sm,
+          cluster,
+          g.region,
+          g.master_username,
+          logger,
+        );
 
         // IAM managed policy scoped to `rds-db:connect` on the specific
         // dbuser ARN. Needs the cluster resource ID (not name) so it survives
