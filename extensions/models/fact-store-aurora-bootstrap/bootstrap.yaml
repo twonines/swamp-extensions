@@ -105,7 +105,7 @@ jobs:
           methodName: execute
           inputs:
             run: >-
-              set -euo pipefail;
+              set -eu;
               CLUSTER_ENDPOINT=$(swamp data get fact-store-aurora-provisioner state --version 1 --json | python3 -c "import json,sys; print(json.load(sys.stdin)['content']['cluster_endpoint'])");
               TOKEN=$(aws rds generate-db-auth-token
               --hostname "$CLUSTER_ENDPOINT"
