@@ -82,17 +82,36 @@ const TruthPacketSchema = z.object({
     hints: z.array(z.string()).optional(),
     kinds: z.array(z.string()).optional(),
   }),
+  truncated: z.boolean().describe(
+    "True when facts or constraints were capped by the query limit",
+  ),
+  totalFactsMatched: z.number().describe(
+    "Number of facts matching the query before the limit was applied",
+  ),
+  totalConstraintsMatched: z.number().describe(
+    "Number of constraints matching the query before the limit was applied",
+  ),
 });
 
 const ProposalListSchema = z.object({
   proposals: z.array(ProposalSchema),
-  total: z.number(),
+  total: z.number().describe(
+    "Number of proposals matching the filter before the limit was applied",
+  ),
+  truncated: z.boolean().describe(
+    "True when proposals were capped by the limit",
+  ),
   filter: z.object({ status: z.string() }),
 });
 
 const FactListSchema = z.object({
   facts: z.array(FactSchema),
-  total: z.number(),
+  total: z.number().describe(
+    "Number of facts matching the filter before the limit was applied",
+  ),
+  truncated: z.boolean().describe(
+    "True when facts were capped by the limit",
+  ),
 });
 
 // ---------------------------------------------------------------------------
@@ -128,7 +147,7 @@ type Ctx = any;
 
 export const model = {
   type: "@twonines/fact-store",
-  version: "2026.06.26.1",
+  version: "2026.07.02.1",
   description:
     "Stores, validates, and serves organizational facts for AI agent consumption. " +
     "Supports a propose→review→activate lifecycle with adversarial validation (ferret/mole pattern).",
@@ -465,7 +484,7 @@ export const model = {
         );
 
         // Filter facts: specName=fact, status=active, scope/identity match
-        const facts = allData
+        const matchedFacts = allData
           .filter((d: { tags: Record<string, string> }) => {
             const t = d.tags;
             if (t.specName !== "fact" || t.status !== "active") return false;
@@ -478,8 +497,9 @@ export const model = {
               if (!args.kinds.includes(t.kind)) return false;
             }
             return true;
-          })
-          .slice(0, args.limit);
+          });
+        const totalFactsMatched = matchedFacts.length;
+        const facts = matchedFacts.slice(0, args.limit);
 
         // Read actual content for matched facts
         const factContents = [];
@@ -497,11 +517,12 @@ export const model = {
         }
 
         // Filter constraints: specName=constraint, status=active
-        const constraintData = allData
+        const matchedConstraints = allData
           .filter((d: { tags: Record<string, string> }) =>
             d.tags.specName === "constraint" && d.tags.status === "active"
-          )
-          .slice(0, 100);
+          );
+        const totalConstraintsMatched = matchedConstraints.length;
+        const constraintData = matchedConstraints.slice(0, 100);
 
         const constraintContents = [];
         for (const d of constraintData) {
@@ -540,6 +561,10 @@ export const model = {
           facts: factContents,
           assembledAt: now(),
           query: { scope: args.scope, hints: args.hints, kinds: args.kinds },
+          truncated: totalFactsMatched > factContents.length ||
+            totalConstraintsMatched > constraintData.length,
+          totalFactsMatched,
+          totalConstraintsMatched,
         };
 
         const handle = await context.writeResource(
@@ -578,14 +603,15 @@ export const model = {
           context.modelId,
         );
 
-        const matched = allData
+        const matches = allData
           .filter((d: { tags: Record<string, string> }) => {
             const t = d.tags;
             if (t.specName !== "proposal") return false;
             if (args.status !== "all" && t.status !== args.status) return false;
             return true;
-          })
-          .slice(0, args.limit);
+          });
+        const total = matches.length;
+        const matched = matches.slice(0, args.limit);
 
         const proposals = [];
         for (const d of matched) {
@@ -603,7 +629,8 @@ export const model = {
 
         const result: z.infer<typeof ProposalListSchema> = {
           proposals,
-          total: proposals.length,
+          total,
+          truncated: total > proposals.length,
           filter: { status: args.status },
         };
 
@@ -640,7 +667,7 @@ export const model = {
           context.modelId,
         );
 
-        const matched = allData
+        const matches = allData
           .filter((d: { tags: Record<string, string> }) => {
             const t = d.tags;
             if (t.specName !== "fact" || t.status !== "active") return false;
@@ -650,8 +677,9 @@ export const model = {
               return false;
             }
             return true;
-          })
-          .slice(0, args.limit);
+          });
+        const total = matches.length;
+        const matched = matches.slice(0, args.limit);
 
         const facts = [];
         for (const d of matched) {
@@ -669,7 +697,8 @@ export const model = {
 
         const result: z.infer<typeof FactListSchema> = {
           facts,
-          total: facts.length,
+          total,
+          truncated: total > facts.length,
         };
 
         const handle = await context.writeResource(
