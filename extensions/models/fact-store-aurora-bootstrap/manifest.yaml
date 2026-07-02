@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@twonines/fact-store-aurora-bootstrap"
-version: "2026.07.02.6"
+version: "2026.07.02.7"
 description: >
   One-shot bootstrap for @twonines/fact-store backed by AWS Aurora
   Postgres Serverless v2. Provisions the RDS cluster + writer instance,
