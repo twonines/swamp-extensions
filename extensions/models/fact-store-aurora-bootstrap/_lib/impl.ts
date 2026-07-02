@@ -302,7 +302,13 @@ export async function ensureCluster(
         Engine: "aurora-postgresql",
         EngineVersion: g.engine_version,
         MasterUsername: g.master_username,
-        // No MasterUserPassword — cluster is IAM-auth-only.
+        // Cluster is intended for IAM-only auth (see EnableIAMDatabaseAuthentication
+        // below). The RDS CreateDBCluster API still requires that ONE of
+        // MasterUserPassword / ManageMasterUserPassword is set, so we set
+        // ManageMasterUserPassword=true and let AWS generate + store a random
+        // password in Secrets Manager. That password is never used by this
+        // bootstrap or its consumers; all authentication happens via IAM.
+        ManageMasterUserPassword: true,
         EnableIAMDatabaseAuthentication: true,
         DBSubnetGroupName: subnetGroupName,
         VpcSecurityGroupIds: [securityGroupId],
