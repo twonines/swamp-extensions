@@ -145,6 +145,15 @@ export const GlobalArgsSchema = z.object({
     .max(35)
     .default(1)
     .describe("BackupRetentionPeriod in days"),
+  tags: z
+    .record(z.string(), z.string())
+    .default({})
+    .describe(
+      "Optional map of Key -> Value tags applied to every newly-created " +
+        "AWS resource (subnet group, security group, cluster, instance, " +
+        "managed policy, workload role). Existing (adopted) resources are " +
+        "not modified.",
+    ),
 });
 
 // ---------------------------------------------------------------------------
@@ -187,7 +196,7 @@ type Ctx = any;
 
 export const model = {
   type: "@twonines/fact-store-aurora-bootstrap/provisioner",
-  version: "2026.07.02.1",
+  version: "2026.07.02.2",
   description:
     "Bootstrap provisioner for @twonines/fact-store on AWS Aurora Postgres Serverless v2. " +
     "Creates the cluster, writer instance, security group, subnet group, an rds-db:connect " +
