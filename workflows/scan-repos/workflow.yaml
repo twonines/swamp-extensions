@@ -2,59 +2,39 @@ id: 376e305b-ead9-45c7-99a9-70c7e1e5f028
 name: "@twonines/scan-repos"
 version: 1
 description: >
-  Discover and scan GitLab repositories. When repos are provided as input,
-  scans those directly. When omitted, runs discovery first to find active
-  repos, then scans each one. Produces versioned scan data per repo for
-  downstream consumption — typically by agents loading the @twonines/fact-store
-  propose-facts skill, but the data is source-of-truth for any consumer.
+  Scan a list of GitLab repositories in parallel. Each repo produces a
+  versioned scan resource — metadata, file tree, and high-signal file
+  contents — for downstream consumption by fact-discovery agents loading
+  the @twonines/fact-store propose-facts skill.
+
+  Repo selection (discovery, random sampling, explicit lists) happens
+  outside this workflow — typically via the scan-repos.sh wrapper script
+  which runs discover, picks repos, then invokes this workflow with
+  the selected paths.
 
 inputs:
+  required:
+    - repos
   properties:
     repos:
       type: array
       items: { type: string }
-      description: >
-        Explicit list of repo paths to scan. If omitted, the workflow
-        discovers active repos first using the discover method.
-    groups:
-      type: array
-      items: { type: string }
-      description: 'Limit discovery to these group paths (e.g. ["engineering", "platform"])'
-    activeSince:
-      type: string
-      description: 'ISO date — only discover repos active after this date (default: 90 days ago)'
+      description: 'Repo paths to scan (e.g. ["cdh/apps/login", "cdh/platform"])'
 
 jobs:
-  - name: discover
-    description: Find active repos (skipped if repos input is provided)
-    condition: ${{ !inputs.repos }}
-    steps:
-      - name: discover-repos
-        task:
-          type: model_method
-          modelIdOrName: repo-scanner
-          methodName: discover
-          inputs:
-            groups: ${{ inputs.groups }}
-            activeSince: ${{ inputs.activeSince }}
-
   - name: scan
     description: Scan each repo in parallel
-    dependsOn:
-      - job: discover
-        condition:
-          type: completed
     steps:
-      - name: scan-${{ self.repo.path }}
+      - name: 'scan-${{ self.repo.replaceAll("/", "--") }}'
         forEach:
           item: repo
-          in: ${{ inputs.repos || data.latest("repo-scanner", "discovery").attributes.repos }}
+          in: ${{ inputs.repos }}
         task:
           type: model_method
           modelIdOrName: repo-scanner
           methodName: scan
           inputs:
-            projectPath: ${{ self.repo.path || self.repo }}
+            projectPath: ${{ self.repo }}
           dataOutputOverrides:
             - specName: scan
               vary:
