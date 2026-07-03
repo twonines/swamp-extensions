@@ -1,8 +1,20 @@
-// ABOUTME: Scans a GitLab repository and returns structured metadata,
-// ABOUTME: a recursive file tree, and the contents of high-signal files.
-// ABOUTME: Use fetch_files for on-demand content retrieval of paths
-// ABOUTME: discovered in the file tree. Use discover to find active repos.
-import { z } from "zod";
+/**
+ * Scans a GitLab repository and returns structured metadata, a recursive
+ * file tree, and the contents of high-signal files. Use `fetch_files`
+ * for on-demand content retrieval of paths discovered in the file tree.
+ * Use `discover` to find active repos across configured groups.
+ *
+ * @module
+ */
+// deno-lint-ignore-file no-import-prefix
+import { z } from "npm:zod@4";
+
+// Swamp method execution context. The SDK does not export a public type for
+// this yet, so we alias `any` with a single scoped ignore. All downstream
+// signatures reference `Ctx` — if the SDK ever ships a concrete type, this
+// alias becomes the single point of change.
+// deno-lint-ignore no-explicit-any
+type Ctx = any;
 
 // ---------------------------------------------------------------------------
 // Config
@@ -24,8 +36,12 @@ const DEFAULT_HIGH_SIGNAL_FILES = [
 ];
 
 const GlobalArgsSchema = z.object({
-  url: z.string().url().describe("GitLab instance base URL (e.g. https://gitlab.com)"),
-  token: z.string().describe("Personal access token with read_api scope"),
+  url: z.string().url().describe(
+    "GitLab instance base URL (e.g. https://gitlab.com)",
+  ),
+  token: z.string().meta({ sensitive: true }).describe(
+    "Personal access token with read_api scope. Vault this — never inline.",
+  ),
 });
 
 // ---------------------------------------------------------------------------
@@ -132,7 +148,9 @@ async function fetchFileRaw(
   try {
     const encoded = encodeURIComponent(filePath);
     const res = await fetch(
-      `${base}/api/v4/projects/${projectId}/repository/files/${encoded}/raw?ref=${encodeURIComponent(branch)}`,
+      `${base}/api/v4/projects/${projectId}/repository/files/${encoded}/raw?ref=${
+        encodeURIComponent(branch)
+      }`,
       { headers: authHeaders(token) },
     );
     if (!res.ok) return null;
@@ -150,9 +168,18 @@ async function fetchFileRaw(
 // Export
 // ---------------------------------------------------------------------------
 
+/**
+ * Model definition for `@twonines/gitlab-repo-scanner`. Exposes three
+ * methods over GitLab's REST API: `discover` (find active repos across
+ * configured groups), `scan` (fetch metadata + recursive file tree +
+ * contents of high-signal files for a single repo), and `fetch_files`
+ * (on-demand content retrieval for paths discovered in the tree).
+ * Requires a GitLab personal access token with `read_api` scope,
+ * typically sourced from a swamp vault via `vault.get(...)`.
+ */
 export const model = {
   type: "@twonines/gitlab-repo-scanner",
-  version: "2026.06.06.1",
+  version: "2026.07.03.1",
   description:
     "Scans a GitLab repository: returns structured metadata, a recursive file tree, " +
     "and contents of high-signal files. Use fetch_files for on-demand content " +
@@ -192,20 +219,33 @@ export const model = {
           .optional()
           .describe("Override the default list of files to auto-fetch on scan"),
       }),
-      // deno-lint-ignore no-explicit-any
-      execute: async (args: { projectPath: string; highSignalFiles?: string[] }, context: any) => {
-        const { url, token } = context.globalArgs as z.infer<typeof GlobalArgsSchema>;
+      execute: async (
+        args: { projectPath: string; highSignalFiles?: string[] },
+        context: Ctx,
+      ) => {
+        const { url, token } = context.globalArgs as z.infer<
+          typeof GlobalArgsSchema
+        >;
         const projectPath = args.projectPath;
         const signalFiles = args.highSignalFiles ?? DEFAULT_HIGH_SIGNAL_FILES;
         const id = encodeURIComponent(projectPath);
 
-        context.logger.info("Scanning repository {path}", { path: projectPath });
+        context.logger.info("Scanning repository {path}", {
+          path: projectPath,
+        });
 
-        const project = await gitlabGet(url, token, `projects/${id}`) as Record<string, unknown>;
+        const project = await gitlabGet(url, token, `projects/${id}`) as Record<
+          string,
+          unknown
+        >;
         const defaultBranch = String(project.default_branch ?? "main");
         const ref = encodeURIComponent(defaultBranch);
 
-        const languages = await gitlabGet(url, token, `projects/${id}/languages`) as Record<string, number>;
+        const languages = await gitlabGet(
+          url,
+          token,
+          `projects/${id}/languages`,
+        ) as Record<string, number>;
 
         const contributorsRaw = await gitlabGet(
           url,
@@ -224,8 +264,17 @@ export const model = {
 
         for (const candidate of signalFiles) {
           if (!treePaths.has(candidate)) continue;
-          const maxBytes = candidate === "README.md" ? MAX_README_BYTES : MAX_FILE_BYTES;
-          const result = await fetchFileRaw(url, token, id, candidate, defaultBranch, maxBytes);
+          const maxBytes = candidate === "README.md"
+            ? MAX_README_BYTES
+            : MAX_FILE_BYTES;
+          const result = await fetchFileRaw(
+            url,
+            token,
+            id,
+            candidate,
+            defaultBranch,
+            maxBytes,
+          );
           if (result !== null) {
             knownFiles.push({ path: candidate, ...result });
           }
@@ -260,7 +309,11 @@ export const model = {
           { files: data.fileTree.length, known: data.knownFiles.length },
         );
 
-        const handle = await context.writeResource("scan", projectPath.replaceAll("/", "--"), data);
+        const handle = await context.writeResource(
+          "scan",
+          projectPath.replaceAll("/", "--"),
+          data,
+        );
         return { dataHandles: [handle] };
       },
     },
@@ -279,17 +332,22 @@ export const model = {
           .array(z.string())
           .describe("File paths relative to repo root"),
       }),
-      // deno-lint-ignore no-explicit-any
       execute: async (
         args: { projectPath: string; branch?: string; paths: string[] },
-        context: any,
+        context: Ctx,
       ) => {
-        const { url, token } = context.globalArgs as z.infer<typeof GlobalArgsSchema>;
+        const { url, token } = context.globalArgs as z.infer<
+          typeof GlobalArgsSchema
+        >;
         const id = encodeURIComponent(args.projectPath);
 
         let branch = args.branch;
         if (!branch) {
-          const project = await gitlabGet(url, token, `projects/${id}`) as Record<string, unknown>;
+          const project = await gitlabGet(
+            url,
+            token,
+            `projects/${id}`,
+          ) as Record<string, unknown>;
           branch = String(project.default_branch ?? "main");
         }
 
@@ -300,11 +358,27 @@ export const model = {
 
         const files: z.infer<typeof FetchedFileSchema>[] = [];
         for (const path of args.paths) {
-          const result = await fetchFileRaw(url, token, id, path, branch, MAX_FILE_BYTES);
+          const result = await fetchFileRaw(
+            url,
+            token,
+            id,
+            path,
+            branch,
+            MAX_FILE_BYTES,
+          );
           if (result === null) {
-            files.push({ path, content: null, error: "not found or not readable", truncated: false });
+            files.push({
+              path,
+              content: null,
+              error: "not found or not readable",
+              truncated: false,
+            });
           } else {
-            files.push({ path, content: result.content, truncated: result.truncated });
+            files.push({
+              path,
+              content: result.content,
+              truncated: result.truncated,
+            });
           }
         }
 
@@ -314,7 +388,11 @@ export const model = {
           fetchedAt: new Date().toISOString(),
         };
 
-        const handle = await context.writeResource("files", args.projectPath.replaceAll("/", "--"), data);
+        const handle = await context.writeResource(
+          "files",
+          args.projectPath.replaceAll("/", "--"),
+          data,
+        );
         return { dataHandles: [handle] };
       },
     },
@@ -327,11 +405,15 @@ export const model = {
         groups: z
           .array(z.string())
           .optional()
-          .describe("Limit to these group paths (e.g. ['engineering', 'platform'])"),
+          .describe(
+            "Limit to these group paths (e.g. ['engineering', 'platform'])",
+          ),
         activeSince: z
           .string()
           .optional()
-          .describe("ISO date — only repos with activity after this date (default: 90 days ago)"),
+          .describe(
+            "ISO date — only repos with activity after this date (default: 90 days ago)",
+          ),
         perPage: z
           .number()
           .optional()
@@ -341,19 +423,29 @@ export const model = {
           .optional()
           .describe("Max pages to fetch (default: 10)"),
       }),
-      // deno-lint-ignore no-explicit-any
       execute: async (
-        args: { groups?: string[]; activeSince?: string; perPage?: number; maxPages?: number },
-        context: any,
+        args: {
+          groups?: string[];
+          activeSince?: string;
+          perPage?: number;
+          maxPages?: number;
+        },
+        context: Ctx,
       ) => {
-        const { url, token } = context.globalArgs as z.infer<typeof GlobalArgsSchema>;
+        const { url, token } = context.globalArgs as z.infer<
+          typeof GlobalArgsSchema
+        >;
         const perPage = Math.min(args.perPage ?? 100, 100);
         const maxPages = args.maxPages ?? 10;
 
         const since = args.activeSince ??
-          new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+          new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split(
+            "T",
+          )[0];
 
-        context.logger.info("Discovering repos active since {since}", { since });
+        context.logger.info("Discovering repos active since {since}", {
+          since,
+        });
 
         const repos: z.infer<typeof DiscoveredRepoSchema>[] = [];
 
@@ -362,10 +454,11 @@ export const model = {
             const groupId = encodeURIComponent(group);
             for (let page = 1; page <= maxPages; page++) {
               const projects = await gitlabGet(
-                url, token,
+                url,
+                token,
                 `groups/${groupId}/projects?include_subgroups=true&archived=false` +
-                `&last_activity_after=${since}&per_page=${perPage}&page=${page}` +
-                `&order_by=last_activity_at&sort=desc`,
+                  `&last_activity_after=${since}&per_page=${perPage}&page=${page}` +
+                  `&order_by=last_activity_at&sort=desc`,
               ) as Array<Record<string, unknown>>;
               for (const p of projects) {
                 repos.push({
@@ -380,9 +473,10 @@ export const model = {
         } else {
           for (let page = 1; page <= maxPages; page++) {
             const projects = await gitlabGet(
-              url, token,
+              url,
+              token,
               `projects?archived=false&last_activity_after=${since}` +
-              `&per_page=${perPage}&page=${page}&order_by=last_activity_at&sort=desc`,
+                `&per_page=${perPage}&page=${page}&order_by=last_activity_at&sort=desc`,
             ) as Array<Record<string, unknown>>;
             for (const p of projects) {
               repos.push({
@@ -395,101 +489,9 @@ export const model = {
           }
         }
 
-        context.logger.info("Discovered {count} repos", { count: repos.length });
-
-        const data: z.infer<typeof DiscoverResultSchema> = {
-          repos,
-          totalFound: repos.length,
-          filters: {
-            groups: args.groups,
-            activeSince: since,
-            archived: false,
-          },
-          discoveredAt: new Date().toISOString(),
-        };
-
-        const handle = await context.writeResource("discovery", "latest", data);
-        return { dataHandles: [handle] };
-      },
-    },
-
-    discover: {
-      description:
-        "Discover active repositories from the GitLab instance. Returns paths " +
-        "suitable as input to the scan method or a batch scan workflow.",
-      arguments: z.object({
-        groups: z
-          .array(z.string())
-          .optional()
-          .describe("Limit to these group paths (e.g. ['engineering', 'platform'])"),
-        activeSince: z
-          .string()
-          .optional()
-          .describe("ISO date — only repos with activity after this date (default: 90 days ago)"),
-        perPage: z
-          .number()
-          .optional()
-          .describe("Results per page (default: 100, max: 100)"),
-        maxPages: z
-          .number()
-          .optional()
-          .describe("Max pages to fetch (default: 10)"),
-      }),
-      // deno-lint-ignore no-explicit-any
-      execute: async (
-        args: { groups?: string[]; activeSince?: string; perPage?: number; maxPages?: number },
-        context: any,
-      ) => {
-        const { url, token } = context.globalArgs as z.infer<typeof GlobalArgsSchema>;
-        const perPage = Math.min(args.perPage ?? 100, 100);
-        const maxPages = args.maxPages ?? 10;
-
-        const since = args.activeSince ??
-          new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-
-        context.logger.info("Discovering repos active since {since}", { since });
-
-        const repos: z.infer<typeof DiscoveredRepoSchema>[] = [];
-
-        if (args.groups && args.groups.length > 0) {
-          for (const group of args.groups) {
-            const groupId = encodeURIComponent(group);
-            for (let page = 1; page <= maxPages; page++) {
-              const projects = await gitlabGet(
-                url, token,
-                `groups/${groupId}/projects?include_subgroups=true&archived=false` +
-                `&last_activity_after=${since}&per_page=${perPage}&page=${page}` +
-                `&order_by=last_activity_at&sort=desc`,
-              ) as Array<Record<string, unknown>>;
-              for (const p of projects) {
-                repos.push({
-                  path: String(p.path_with_namespace ?? ""),
-                  lastActivityAt: String(p.last_activity_at ?? ""),
-                  visibility: String(p.visibility ?? ""),
-                });
-              }
-              if (projects.length < perPage) break;
-            }
-          }
-        } else {
-          for (let page = 1; page <= maxPages; page++) {
-            const projects = await gitlabGet(
-              url, token,
-              `projects?archived=false&last_activity_after=${since}` +
-              `&per_page=${perPage}&page=${page}&order_by=last_activity_at&sort=desc`,
-            ) as Array<Record<string, unknown>>;
-            for (const p of projects) {
-              repos.push({
-                path: String(p.path_with_namespace ?? ""),
-                lastActivityAt: String(p.last_activity_at ?? ""),
-                visibility: String(p.visibility ?? ""),
-              });
-            }
-            if (projects.length < perPage) break;
-          }
-        }
-
-        context.logger.info("Discovered {count} repos", { count: repos.length });
+        context.logger.info("Discovered {count} repos", {
+          count: repos.length,
+        });
 
         const data: z.infer<typeof DiscoverResultSchema> = {
           repos,
