@@ -13,6 +13,7 @@
  * @module
  */
 
+// deno-lint-ignore-file no-import-prefix
 import {
   CreateDBClusterCommand,
   CreateDBInstanceCommand,
@@ -22,13 +23,13 @@ import {
   DescribeDBInstancesCommand,
   DescribeDBSubnetGroupsCommand,
   RDSClient,
-} from "@aws-sdk/client-rds";
+} from "npm:@aws-sdk/client-rds@3.1024.0";
 import {
   AuthorizeSecurityGroupIngressCommand,
   CreateSecurityGroupCommand,
   DescribeSecurityGroupsCommand,
   type EC2Client,
-} from "@aws-sdk/client-ec2";
+} from "npm:@aws-sdk/client-ec2@3.1024.0";
 import {
   AttachRolePolicyCommand,
   CreatePolicyCommand,
@@ -38,21 +39,38 @@ import {
   GetRoleCommand,
   type IAMClient,
   ListAttachedRolePoliciesCommand,
-} from "@aws-sdk/client-iam";
-import { GetCallerIdentityCommand, type STSClient } from "@aws-sdk/client-sts";
+} from "npm:@aws-sdk/client-iam@3.1024.0";
+import {
+  GetCallerIdentityCommand,
+  type STSClient,
+} from "npm:@aws-sdk/client-sts@3.1024.0";
 import {
   GetSecretValueCommand,
   type SecretsManagerClient,
-} from "@aws-sdk/client-secrets-manager";
-import { Signer } from "@aws-sdk/rds-signer";
-import postgres from "postgres";
+} from "npm:@aws-sdk/client-secrets-manager@3.1024.0";
+import { Signer } from "npm:@aws-sdk/rds-signer@3.1024.0";
+import postgres from "npm:postgres@3.4.5";
 
+/**
+ * Structured logger surface used by every provisioner helper. Provided by
+ * the swamp method execution context — helpers accept it as an argument
+ * rather than importing a concrete logger, so they remain trivially
+ * testable with a fake.
+ */
 export interface Logger {
   info: (msg: string, props?: Record<string, unknown>) => void;
   warning: (msg: string, props?: Record<string, unknown>) => void;
   error: (msg: string, props?: Record<string, unknown>) => void;
 }
 
+/**
+ * Runtime shape of the provisioner's globalArguments — the union of
+ * caller-supplied AWS coordinates (account/region/VPC/subnets/ingress),
+ * resource identifiers (all with sensible defaults), cluster sizing
+ * (Serverless v2 ACU min/max, backup retention, engine version), and a
+ * tags map applied to every newly-created resource. All fields also
+ * validated by the Zod `GlobalArgsSchema` in `mod.ts`.
+ */
 export interface GlobalArgs {
   account_id: string;
   region: string;
@@ -282,6 +300,15 @@ export async function ensureSecurityGroup(
   return groupId;
 }
 
+/**
+ * Structural output returned by `ensureCluster` — the small handful of
+ * post-creation cluster identifiers downstream helpers (instance, managed
+ * policy, workload role) and the workflow's configure step need to
+ * reference. `master_user_secret_arn` is populated when the cluster was
+ * created with `ManageMasterUserPassword: true` (the default for clusters
+ * this bootstrap creates); undefined for adopted clusters created by some
+ * other mechanism.
+ */
 export interface ClusterOutputs {
   cluster_arn: string;
   cluster_endpoint: string;
@@ -438,6 +465,10 @@ export async function ensureCluster(
   }
 }
 
+/**
+ * Structural output returned by `ensureInstance` — the writer instance
+ * identifier (matches globalArgs.instance_identifier) and its ARN.
+ */
 export interface InstanceOutputs {
   instance_arn: string;
   instance_identifier: string;

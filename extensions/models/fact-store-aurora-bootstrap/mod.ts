@@ -13,12 +13,13 @@
  * @module
  */
 
-import { z } from "zod";
-import { RDSClient } from "@aws-sdk/client-rds";
-import { EC2Client } from "@aws-sdk/client-ec2";
-import { IAMClient } from "@aws-sdk/client-iam";
-import { STSClient } from "@aws-sdk/client-sts";
-import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+// deno-lint-ignore-file no-import-prefix
+import { z } from "npm:zod@4";
+import { RDSClient } from "npm:@aws-sdk/client-rds@3.1024.0";
+import { EC2Client } from "npm:@aws-sdk/client-ec2@3.1024.0";
+import { IAMClient } from "npm:@aws-sdk/client-iam@3.1024.0";
+import { STSClient } from "npm:@aws-sdk/client-sts@3.1024.0";
+import { SecretsManagerClient } from "npm:@aws-sdk/client-secrets-manager@3.1024.0";
 import {
   attachPolicyToRole,
   ensureCluster,
@@ -73,6 +74,12 @@ const IdentifierSchema = z
     "Identifier must start with a letter, contain only letters/digits/hyphens, max 63 chars",
   );
 
+/**
+ * Zod schema for the provisioner model's globalArguments. Validates and
+ * defaults the caller-supplied AWS coordinates, resource identifiers,
+ * cluster sizing, and tags map. Also serves as the runtime schema used
+ * when the provisioner method is invoked.
+ */
 export const GlobalArgsSchema = z.object({
   account_id: AccountIdSchema.describe(
     "Expected AWS account ID. Provisioner verifies caller identity matches before mutating.",
@@ -162,6 +169,15 @@ export const GlobalArgsSchema = z.object({
 // Output resource schema
 // ---------------------------------------------------------------------------
 
+/**
+ * Zod schema for the single `state` resource the provisioner writes
+ * after a successful run. Captures every identifier and ARN downstream
+ * workflow steps or consumer models might need to reference — cluster
+ * endpoint (for connection string assembly), cluster resource id (for
+ * IAM policy ARNs), workload role ARN (for AssumeRole callers), master
+ * user secret ARN (for password-based bootstrap operations before IAM
+ * DB auth is granted), etc.
+ */
 export const StateSchema = z.object({
   account_id: z.string(),
   region: z.string(),
@@ -196,6 +212,10 @@ export const StateSchema = z.object({
   provisioned_at: z.string().describe("ISO-8601 timestamp of provisioning"),
 });
 
+/**
+ * Type of the `state` resource written by the provisioner's `provision`
+ * method. Inferred from `StateSchema`.
+ */
 export type State = z.infer<typeof StateSchema>;
 
 // deno-lint-ignore no-explicit-any
@@ -205,9 +225,21 @@ type Ctx = any;
 // Model
 // ---------------------------------------------------------------------------
 
+/**
+ * Model definition for `@twonines/fact-store-aurora-bootstrap/provisioner`.
+ * The single `provision` method creates or adopts (idempotently) the six
+ * AWS resources needed to back `@twonines/fact-store` via
+ * `@webframp/postgres-datastore`: RDS DB subnet group, EC2 security group,
+ * Aurora Postgres Serverless v2 cluster (with `ManageMasterUserPassword`
+ * and `EnableIAMDatabaseAuthentication`), writer DB instance, IAM managed
+ * policy scoped to `rds-db:connect`, and an IAM workload role that trusts
+ * a caller-supplied principal. Also grants `rds_iam` to the master user
+ * so IAM DB auth actually works. Emits one `state` resource describing
+ * the resulting identifiers.
+ */
 export const model = {
   type: "@twonines/fact-store-aurora-bootstrap/provisioner",
-  version: "2026.07.02.7",
+  version: "2026.07.03.1",
   description:
     "Bootstrap provisioner for @twonines/fact-store on AWS Aurora Postgres Serverless v2. " +
     "Creates the cluster, writer instance, security group, subnet group, an rds-db:connect " +
