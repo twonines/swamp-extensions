@@ -25,7 +25,7 @@ jobs:
   - name: scan
     description: Scan each repo in parallel
     steps:
-      - name: 'scan-${{ self.repo.replaceAll("/", "--") }}'
+      - name: scan
         forEach:
           item: repo
           in: ${{ inputs.repos }}
@@ -35,7 +35,3 @@ jobs:
           methodName: scan
           inputs:
             projectPath: ${{ self.repo }}
-          dataOutputOverrides:
-            - specName: scan
-              vary:
-                - projectPath
