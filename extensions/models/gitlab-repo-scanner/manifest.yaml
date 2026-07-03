@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@twonines/gitlab-repo-scanner"
-version: "2026.07.03.1"
+version: "2026.07.03.2"
 description: >
   Scans a GitLab repository: returns structured metadata, a recursive file
   tree, and contents of known high-signal files. Provides fetch_files for
