@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@twonines/scan-repos"
-version: "2026.07.03.4"
+version: "2026.07.03.5"
 description: >
   Batch scan of GitLab repositories, orchestrated as a swamp workflow.
   Given an explicit list of repo paths, scans each in parallel. Given no
