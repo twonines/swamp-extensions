@@ -19,10 +19,10 @@ inputs:
     groups:
       type: array
       items: { type: string }
-      description: Limit discovery to these group paths (e.g. ["engineering", "platform"])
+      description: 'Limit discovery to these group paths (e.g. ["engineering", "platform"])'
     activeSince:
       type: string
-      description: ISO date — only discover repos active after this date (default: 90 days ago)
+      description: 'ISO date — only discover repos active after this date (default: 90 days ago)'
 
 jobs:
   - name: discover
