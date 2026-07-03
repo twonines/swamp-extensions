@@ -179,7 +179,7 @@ async function fetchFileRaw(
  */
 export const model = {
   type: "@twonines/gitlab-repo-scanner",
-  version: "2026.07.03.1",
+  version: "2026.07.03.2",
   description:
     "Scans a GitLab repository: returns structured metadata, a recursive file tree, " +
     "and contents of high-signal files. Use fetch_files for on-demand content " +
@@ -504,7 +504,17 @@ export const model = {
           discoveredAt: new Date().toISOString(),
         };
 
-        const handle = await context.writeResource("discovery", "latest", data);
+        // Instance name "latest" is reserved by swamp for its CEL
+        // resolver (e.g. `data.latest(...)`). Use "snapshot" instead —
+        // consumers still reach the resource with
+        // `data.latest("<scanner-instance>", "discovery")` because that
+        // resolver picks the most-recent version regardless of instance
+        // name.
+        const handle = await context.writeResource(
+          "discovery",
+          "snapshot",
+          data,
+        );
         return { dataHandles: [handle] };
       },
     },
