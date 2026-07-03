@@ -1,4 +1,5 @@
-name: scan-repos
+id: 376e305b-ead9-45c7-99a9-70c7e1e5f028
+name: "@twonines/scan-repos"
 version: 1
 description: >
   Discover and scan GitLab repositories. When repos are provided as input,
