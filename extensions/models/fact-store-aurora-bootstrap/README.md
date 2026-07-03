@@ -90,6 +90,29 @@ does not sync tag drift. To manage tags on an existing resource after
 bootstrap, use the first-party `@swamp/aws/*` types or update tags out of
 band.
 
+## Inspecting the result
+
+After a successful workflow run, the provisioner writes a single `state`
+resource capturing every identifier and ARN downstream steps might need:
+
+```bash
+swamp data get fact-store-aurora-provisioner state --json
+```
+
+Sample content:
+
+```json
+{
+  "cluster_endpoint": "fact-store-db-cluster.cluster-abc123.us-east-1.rds.amazonaws.com",
+  "cluster_resource_id": "cluster-EXAMPLERESOURCEIDXXXXXXXXXX",
+  "cluster_arn": "arn:aws:rds:us-east-1:123456789012:cluster:fact-store-db-cluster",
+  "master_user_secret_arn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:rds!cluster-...",
+  "workload_role_arn": "arn:aws:iam::123456789012:role/fact-store-workload",
+  "managed_policy_arn": "arn:aws:iam::123456789012:policy/fact-store-db-connect-policy",
+  "instance_arn": "arn:aws:rds:us-east-1:123456789012:db:fact-store-db-instance-1"
+}
+```
+
 ## What ships in the tarball
 
 - `mod.ts` — the provisioner model type

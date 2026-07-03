@@ -1,8 +1,14 @@
-// ABOUTME: Stores, validates, and serves organizational facts for AI agent
-// ABOUTME: consumption. Facts are relational truths about infrastructure,
-// ABOUTME: repositories, services, teams, and their connections. Supports a
-// ABOUTME: propose→review→activate lifecycle with adversarial validation.
-import { z } from "zod";
+/**
+ * Stores, validates, and serves organizational facts for AI agent
+ * consumption. Facts are relational truths about infrastructure,
+ * repositories, services, teams, and their connections. Supports a
+ * propose→review→activate lifecycle with adversarial validation
+ * (ferret/mole pattern).
+ *
+ * @module
+ */
+// deno-lint-ignore-file no-import-prefix
+import { z } from "npm:zod@4";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -145,9 +151,17 @@ type Ctx = any;
 // Model
 // ---------------------------------------------------------------------------
 
+/**
+ * Model definition for `@twonines/fact-store`. Exposes the propose /
+ * review / activate lifecycle over three primary resource specs (fact,
+ * proposal, constraint) plus three read-side projections (truth-packet,
+ * proposal-list, fact-list). Consumed by the bundled agent skills
+ * `propose-facts` (ferret) and `review-proposals` (mole), and by any
+ * agent calling `query` to assemble a truth packet before acting.
+ */
 export const model = {
   type: "@twonines/fact-store",
-  version: "2026.07.02.1",
+  version: "2026.07.03.1",
   description:
     "Stores, validates, and serves organizational facts for AI agent consumption. " +
     "Supports a propose→review→activate lifecycle with adversarial validation (ferret/mole pattern).",

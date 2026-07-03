@@ -327,7 +327,7 @@ export const model = {
         groups: z
           .array(z.string())
           .optional()
-          .describe("Limit to these group paths (e.g. ['o11n', 'appsvc'])"),
+          .describe("Limit to these group paths (e.g. ['engineering', 'platform'])"),
         activeSince: z
           .string()
           .optional()
@@ -421,7 +421,7 @@ export const model = {
         groups: z
           .array(z.string())
           .optional()
-          .describe("Limit to these group paths (e.g. ['o11n', 'appsvc'])"),
+          .describe("Limit to these group paths (e.g. ['engineering', 'platform'])"),
         activeSince: z
           .string()
           .optional()
