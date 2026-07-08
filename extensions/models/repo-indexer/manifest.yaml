@@ -1,0 +1,31 @@
+manifestVersion: 1
+name: "@twonines/repo-indexer"
+version: "2026.07.07.1"
+description: >
+  Clones a GitLab repository, chunks all text files, embeds them via an
+  OpenAI-compatible API, and writes a SQLite database supporting hybrid
+  search (FTS5 keyword + vector cosine with RRF reranking). Ferret queries
+  the index with hypothesis-driven questions instead of reading file dumps.
+repository: "https://codeberg.org/twonines/swamp-extensions"
+paths:
+  base: manifest
+models:
+  - mod.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.md
+  - DESIGN.md
+labels:
+  - gitlab
+  - git
+  - repository
+  - indexer
+  - embeddings
+  - search
+  - sqlite
+dependencies: []

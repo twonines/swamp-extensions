@@ -1,0 +1,25 @@
+manifestVersion: 1
+name: "@twonines/index-repos"
+version: "2026.07.08.1"
+description: >
+  Batch index of GitLab repositories via @twonines/repo-indexer.
+  Given an explicit list of repo paths, indexes each sequentially
+  (clone, chunk, embed, write SQLite db). Sequential because the
+  embedding API has rate limits — parallel would cause 429 storms.
+  Produces one versioned index resource per repo, searchable by
+  agents loading the propose-facts skill.
+repository: "https://codeberg.org/twonines/swamp-extensions"
+paths:
+  base: manifest
+workflows:
+  - workflow.yaml
+dependencies:
+  - "@twonines/repo-indexer"
+additionalFiles:
+  - LICENSE.md
+labels:
+  - gitlab
+  - repository
+  - indexer
+  - embeddings
+  - workflow
