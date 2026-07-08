@@ -42,6 +42,9 @@ branch, activity dates — these are already available from repo metadata.
 ## Inputs to gather first
 
 ```bash
+# What repos are already indexed — start here
+swamp model method run repo-indexer list-indexed --json
+
 # Search the target repo's index with your hypotheses
 swamp model method run repo-indexer search \
   --input repo=<group/repo> \
