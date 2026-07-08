@@ -186,7 +186,7 @@ type Ctx = any;
  */
 export const model = {
   type: "@twonines/fact-store",
-  version: "2026.07.08.1",
+  version: "2026.07.08.2",
   description:
     "Stores, validates, and serves organizational facts for AI agent consumption. " +
     "Supports a propose→review→activate lifecycle with adversarial validation (ferret/mole pattern).",

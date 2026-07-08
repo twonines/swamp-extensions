@@ -23,13 +23,23 @@ this role is independence.
 # Pending proposals
 swamp model method run facts list_proposals --input status=proposed --json
 
-# Available scan data for context
-swamp data list repo-scanner --json
-swamp data get repo-scanner scan-<repo-path> --json
+# Search the repo index for independent verification
+swamp model method run repo-indexer search \
+  --input repo=<group/repo> \
+  --input 'query=<verify the claim independently>' \
+  --json
 ```
 
-For each proposal, read its `evidence` array. **Then fetch those files
-yourself.** Don't trust the proposer's interpretation — read the bytes.
+For each proposal, read its `evidence` array. **Then verify those files
+yourself.** Don't trust the proposer's interpretation — search the index
+or fetch the files directly.
+
+```bash
+# Fetch a specific file for verification if needed
+swamp model method run repo-scanner fetch_files \
+  --input projectPath=<group/repo> \
+  --input 'paths=["path/to/cited/file"]' --json
+```
 
 ```bash
 # Fetch a file from the cited repo for verification
@@ -201,10 +211,23 @@ ferret address the gap.
 1. List pending proposals
 2. For each one:
    a. Read the claim and the evidence list
-   b. Fetch the cited files
+   b. Verify the cited evidence independently (search the index or fetch files)
    c. Apply the four review criteria
    d. Activate or reject
 3. Continue until the proposed queue is empty
 4. If rejecting many proposals from the same ferret, look for a pattern —
    the ferret may be reading a class of evidence wrong, and that pattern
    is worth recording (perhaps as a constraint via `add_constraint`)
+
+## After activating facts
+
+After activating one or more proposals, refresh the jitter export so
+downstream consumers (agents using `consult-facts`) see the new facts:
+
+```bash
+swamp workflow run refresh-fact-index
+```
+
+This runs `facts export` which materializes all active facts and
+constraints to the local SQLite db that jitter reads from. Do this once
+at the end of a review session, not after every individual activation.
