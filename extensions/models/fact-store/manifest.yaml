@@ -26,6 +26,8 @@ additionalFiles:
   - DESIGN.md
   - AUTHORITY_TIERS.md
   - LICENSE.md
+  - prompts/ferret.md
+  - prompts/mole.md
 labels:
   - facts
   - knowledge

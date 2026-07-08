@@ -79,8 +79,8 @@ Don't propose what you can't verify. If a search result hints at
 something but doesn't confirm it, dig deeper:
 
 - Run more specific searches against the same index
-- Use `fetch_files` on the `repo-scanner` model if you need the full
-  untruncated content of a specific file
+- Run a narrower `repo-indexer search` query targeting the specific
+  file path or identifier to get more context from the indexed chunks
 - Search other repos' indexes if you see cross-repo references
 
 Follow reference chains. If a search result mentions account
@@ -168,6 +168,32 @@ When mole rejects a proposal, read the reason. Then:
 - If you disagree on substance: don't re-propose verbatim. Address the
   rejection — change the kind, change the authority basis, narrow the
   scope — or escalate to a human.
+
+## Constraints
+
+**No external tools.** Do not shell out to `git`, `curl`, `jq`, or any
+other CLI tool. Do not pipe swamp output through `python`, `python3`,
+`jq`, `grep`, `sed`, `awk`, or any other program. Run swamp commands
+with `--json` and read the output directly — no post-processing
+pipelines. All discovery work must go through swamp models, methods,
+and workflows. If you hit a wall where the swamp data model doesn't
+provide what you need (missing method, insufficient index coverage,
+data you can't reach), don't improvise — note it and include it in
+your end-of-pass report.
+
+**Report gaps and inaccuracies.** At the end of every discovery pass,
+include a brief section listing:
+
+- **Tooling gaps** — things you needed but couldn't do through swamp
+  (e.g. "needed to read a binary artifact", "no method to query X
+  service directly").
+- **Instruction inaccuracies** — anything in this skill document that
+  was wrong, outdated, or misleading based on what you encountered
+  (e.g. "method `foo` no longer exists", "the `status` input is now
+  required", "the workflow name changed").
+
+This feedback loop keeps the skill accurate and surfaces missing
+capabilities early.
 
 ## Operating loop
 

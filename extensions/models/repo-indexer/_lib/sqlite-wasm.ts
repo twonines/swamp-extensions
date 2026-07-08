@@ -42,7 +42,10 @@ export async function initSqlite3(logger?: Logger): Promise<any> {
       bytes: cachedWasmBytes.byteLength,
     });
   }
-  cachedSqlite3 = await (sqlite3InitModule as (config?: unknown) => Promise<any>)({ wasmBinary: cachedWasmBytes });
+  cachedSqlite3 =
+    await (sqlite3InitModule as (config?: unknown) => Promise<any>)({
+      wasmBinary: cachedWasmBytes,
+    });
   return cachedSqlite3;
 }
 
@@ -234,7 +237,9 @@ export function floatToBlob(vec: Float32Array): Uint8Array {
 export function blobToFloat(blob: Uint8Array | ArrayBuffer): Float32Array {
   const buf = blob instanceof Uint8Array ? blob.buffer : blob;
   const offset = blob instanceof Uint8Array ? blob.byteOffset : 0;
-  const len = blob instanceof Uint8Array ? blob.byteLength : (blob as ArrayBuffer).byteLength;
+  const len = blob instanceof Uint8Array
+    ? blob.byteLength
+    : (blob as ArrayBuffer).byteLength;
   // Copy to properly aligned buffer
   const copy = new ArrayBuffer(len);
   new Uint8Array(copy).set(new Uint8Array(buf, offset, len));

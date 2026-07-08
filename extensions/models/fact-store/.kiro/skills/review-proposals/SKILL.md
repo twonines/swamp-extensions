@@ -32,20 +32,19 @@ swamp model method run repo-indexer search \
 
 For each proposal, read its `evidence` array. **Then verify those files
 yourself.** Don't trust the proposer's interpretation — search the index
-or fetch the files directly.
+with targeted queries that would confirm or refute the claim.
 
 ```bash
-# Fetch a specific file for verification if needed
-swamp model method run repo-scanner fetch_files \
-  --input projectPath=<group/repo> \
-  --input 'paths=["path/to/cited/file"]' --json
+# Verify a specific cited file by searching for its content
+swamp model method run repo-indexer search \
+  --input repo=<group/repo> \
+  --input 'query=<exact identifier or phrase from the claim>' \
+  --input limit=5 --json
 ```
 
-```bash
-# Fetch a file from the cited repo for verification
-# Use gitlab-repo-scanner's fetch_files method, or call the GitLab API
-# directly with the configured token
-```
+Run multiple narrow searches if needed — one per cited file or claim
+element. The index returns file paths, line ranges, and content chunks,
+which is sufficient for verification.
 
 ## Review criteria
 
@@ -206,6 +205,31 @@ ferret can always re-propose with stronger evidence. If you find yourself
 rationalizing toward activation, that's a signal — reject and let the
 ferret address the gap.
 
+## Constraints
+
+**No external tools.** Do not shell out to `git`, `curl`, `jq`, or any
+other CLI tool. Do not pipe swamp output through `python`, `python3`,
+`jq`, `grep`, `sed`, `awk`, or any other program. Run swamp commands
+with `--json` and read the output directly — no post-processing
+pipelines. All verification work must go through swamp models, methods,
+and workflows. If you hit a wall where the swamp data model doesn't
+provide what you need (missing method, can't access a file, insufficient
+index coverage), note it and include it in your end-of-run report.
+
+**Report gaps and inaccuracies.** At the end of every review session,
+include a brief section listing:
+
+- **Tooling gaps** — things you needed but couldn't do through swamp
+  (e.g. "needed full file content but index only returned chunks",
+  "no method to verify live system state").
+- **Instruction inaccuracies** — anything in this skill document that
+  was wrong, outdated, or misleading based on what you encountered
+  (e.g. "method name changed", "workflow failed with unexpected error",
+  "referenced model doesn't exist").
+
+This feedback loop keeps the skill accurate and surfaces missing
+capabilities early.
+
 ## Operating loop
 
 1. List pending proposals
@@ -221,13 +245,24 @@ ferret address the gap.
 
 ## After activating facts
 
-After activating one or more proposals, refresh the jitter export so
+After activating one or more proposals, refresh the fact index so
 downstream consumers (agents using `consult-facts`) see the new facts:
 
 ```bash
 swamp workflow run refresh-fact-index
 ```
 
-This runs `facts export` which materializes all active facts and
-constraints to the local SQLite db that jitter reads from. Do this once
-at the end of a review session, not after every individual activation.
+**What this does:** The workflow calls the `export` method on the `facts`
+model, which:
+
+1. Reads all active facts and constraints from the datastore
+2. Generates text embeddings for hybrid search
+3. Materializes a SQLite database (FTS5 + vector) at `~/.jitter/facts.db`
+
+The `consult-facts` consumer reads from this local SQLite file. If you
+don't run the export, newly activated facts won't appear in consumer
+queries until someone else triggers it.
+
+**When to run:** Once at the end of a review session — not after every
+individual activation. If you activated zero proposals (all rejected),
+skip it.

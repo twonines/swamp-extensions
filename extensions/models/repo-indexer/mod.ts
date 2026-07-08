@@ -14,7 +14,7 @@ import {
   cosine,
   floatToBlob,
   WasmDb,
-} from "../_lib/sqlite-wasm.ts";
+} from "./_lib/sqlite-wasm.ts";
 
 type Ctx = any;
 
@@ -171,6 +171,19 @@ const DiscoverOutputSchema = z.object({
     archived: z.boolean(),
   }),
   discoveredAt: z.string(),
+});
+
+const IndexedRepoSchema = z.object({
+  repo: z.string(),
+  indexedAt: z.string(),
+  chunkCount: z.number(),
+  dbSizeBytes: z.number(),
+});
+
+const ListIndexedOutputSchema = z.object({
+  repos: z.array(IndexedRepoSchema),
+  totalIndexed: z.number(),
+  queriedAt: z.string(),
 });
 
 // ---------------------------------------------------------------------------
@@ -915,7 +928,7 @@ function hybridSearch(
  */
 export const model = {
   type: "@twonines/repo-indexer",
-  version: "2026.07.07.1",
+  version: "2026.07.08.1",
   description:
     "Clones a GitLab repository, chunks all text files, embeds them, and writes " +
     "a SQLite database supporting hybrid search (FTS5 + vector cosine + RRF). " +
@@ -945,6 +958,12 @@ export const model = {
       schema: DiscoverOutputSchema,
       lifetime: "infinite" as const,
       garbageCollection: 5,
+    },
+    "list-indexed": {
+      description: "List of all repos with an existing index",
+      schema: ListIndexedOutputSchema,
+      lifetime: "1h" as const,
+      garbageCollection: 3,
     },
   },
   methods: {
@@ -1500,6 +1519,75 @@ export const model = {
 
         const handle = await context.writeResource(
           "discovery",
+          "snapshot",
+          output,
+        );
+        return { dataHandles: [handle] };
+      },
+    },
+
+    "list-indexed": {
+      description:
+        "List all repositories that have an existing index. Returns repo paths, " +
+        "index timestamps, chunk counts, and database sizes without loading the " +
+        "full SQLite databases.",
+      arguments: z.object({}),
+      execute: async (
+        _args: Record<string, never>,
+        context: Ctx,
+      ) => {
+        // Find all data items for this model and filter to index resources
+        const allData = await context.dataRepository.findAllForModel(
+          context.modelType,
+          context.modelId,
+        );
+
+        const indexItems = allData.filter(
+          (d: { tags: Record<string, string> }) => d.tags.specName === "index",
+        );
+
+        // Read metadata from each index resource (without full db content)
+        const repos: Array<{
+          repo: string;
+          indexedAt: string;
+          chunkCount: number;
+          dbSizeBytes: number;
+        }> = [];
+
+        for (const item of indexItems) {
+          const content = await context.dataRepository.getContent(
+            context.modelType,
+            context.modelId,
+            item.name,
+          );
+          if (content) {
+            try {
+              const data = JSON.parse(new TextDecoder().decode(content));
+              repos.push({
+                repo: data.repo ?? item.name.replaceAll("--", "/"),
+                indexedAt: data.indexedAt ?? "unknown",
+                chunkCount: data.chunkCount ?? 0,
+                dbSizeBytes: data.dbSizeBytes ?? 0,
+              });
+            } catch { /* skip unparseable */ }
+          }
+        }
+
+        // Sort by indexedAt descending (most recent first)
+        repos.sort((a, b) => b.indexedAt.localeCompare(a.indexedAt));
+
+        const output = {
+          repos,
+          totalIndexed: repos.length,
+          queriedAt: new Date().toISOString(),
+        };
+
+        context.logger.info("Found {count} indexed repos", {
+          count: repos.length,
+        });
+
+        const handle = await context.writeResource(
+          "list-indexed",
           "snapshot",
           output,
         );

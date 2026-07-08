@@ -1276,7 +1276,10 @@ function expandPath(p: string): string {
 }
 
 async function sha256Export(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    bytes as unknown as Uint8Array<ArrayBuffer>,
+  );
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
@@ -1415,16 +1418,17 @@ async function loadSqlite3Export(logger: any): Promise<any> {
     const tarGz = new Uint8Array(await resp.arrayBuffer());
     cachedWasmBytesExport = await extractWasmFromTgz(tarGz);
   }
-  cachedSqlite3Export = await sqlite3InitModule({
-    wasmBinary: cachedWasmBytesExport,
-  });
+  cachedSqlite3Export =
+    await (sqlite3InitModule as (config?: unknown) => Promise<unknown>)({
+      wasmBinary: cachedWasmBytesExport,
+    });
   return cachedSqlite3Export;
 }
 
 async function extractWasmFromTgz(tarGz: Uint8Array): Promise<Uint8Array> {
   const ds = new DecompressionStream("gzip");
   const writer = ds.writable.getWriter();
-  writer.write(tarGz);
+  writer.write(tarGz as unknown as Uint8Array<ArrayBuffer>);
   writer.close();
   const chunks: Uint8Array[] = [];
   const reader = ds.readable.getReader();
@@ -1477,7 +1481,7 @@ async function buildExportSqlite(
   logger: any,
 ): Promise<Uint8Array> {
   const sqlite3 = await loadSqlite3Export(logger);
-  const db = new sqlite3.oo1.DB(":memory:", "ct");
+  const db = new sqlite3.oo1.DB(":memory:", "c");
   try {
     db.exec(EXPORT_SCHEMA_SQL);
 
