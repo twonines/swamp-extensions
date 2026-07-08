@@ -120,6 +120,30 @@ const FactListSchema = z.object({
   ),
 });
 
+const CoverageGapSchema = z.object({
+  repo: z.string().describe("Repository path"),
+  gapType: z.string().describe(
+    "Type of gap: no_facts, single_dimension, dangling_reference, no_index",
+  ),
+  detail: z.string().describe("Human-readable explanation of the gap"),
+  suggestedQueries: z.array(z.string()).describe(
+    "Hypothesis-driven search queries to fill this gap",
+  ),
+});
+
+const CoverageGapsOutputSchema = z.object({
+  gaps: z.array(CoverageGapSchema),
+  summary: z.object({
+    totalReposDiscovered: z.number(),
+    reposWithFacts: z.number(),
+    reposWithoutFacts: z.number(),
+    reposWithIndex: z.number(),
+    singleDimensionRepos: z.number(),
+    danglingReferences: z.number(),
+  }),
+  generatedAt: z.string(),
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -161,7 +185,7 @@ type Ctx = any;
  */
 export const model = {
   type: "@twonines/fact-store",
-  version: "2026.07.03.1",
+  version: "2026.07.08.1",
   description:
     "Stores, validates, and serves organizational facts for AI agent consumption. " +
     "Supports a propose→review→activate lifecycle with adversarial validation (ferret/mole pattern).",
@@ -200,6 +224,12 @@ export const model = {
     "fact-list": {
       description: "Filtered list of facts",
       schema: FactListSchema,
+      lifetime: "1h" as const,
+      garbageCollection: 3,
+    },
+    "coverage-gaps": {
+      description: "Analysis of knowledge gaps for curiosity-driven discovery",
+      schema: CoverageGapsOutputSchema,
       lifetime: "1h" as const,
       garbageCollection: 3,
     },
@@ -774,6 +804,205 @@ export const model = {
         );
 
         context.logger.info("Constraint added", { id, kind: args.kind });
+        return { dataHandles: [handle] };
+      },
+    },
+
+    coverage_gaps: {
+      description:
+        "Analyze the fact store for knowledge gaps — repos with no facts, " +
+        "single-dimension coverage, dangling references, and unindexed repos. " +
+        "Returns suggested search queries for each gap. Used by ferret to " +
+        "prioritize discovery work.",
+      arguments: z.object({
+        discoveredRepos: z.array(z.string()).optional().describe(
+          "List of known repo paths. If omitted, analyzes only repos already in the fact store.",
+        ),
+        indexedRepos: z.array(z.string()).optional().describe(
+          "List of repos that have been indexed (have a searchable db). Gaps flagged for unindexed repos.",
+        ),
+        limit: z.number().default(50).describe(
+          "Max gaps to return, prioritized by impact.",
+        ),
+      }),
+      execute: async (
+        args: {
+          discoveredRepos?: string[];
+          indexedRepos?: string[];
+          limit: number;
+        },
+        context: Ctx,
+      ) => {
+        context.logger.info("Analyzing coverage gaps");
+
+        // Load all active facts
+        const allData = await context.dataRepository.findAllForModel(
+          context.modelType,
+          context.modelId,
+        );
+        const factData = allData.filter(
+          (d: { tags: Record<string, string> }) =>
+            d.tags.specName === "fact" && d.tags.status === "active",
+        );
+
+        interface FactRecord {
+          kind: string;
+          scope: string;
+          value: unknown;
+          subjectRef: { identityValue: string };
+        }
+
+        const facts: FactRecord[] = [];
+        for (const d of factData) {
+          const content = await context.dataRepository.getContent(
+            context.modelType,
+            context.modelId,
+            d.name,
+          );
+          if (content) {
+            try {
+              facts.push(JSON.parse(new TextDecoder().decode(content)));
+            } catch { /* skip */ }
+          }
+        }
+
+        // Build per-repo analysis
+        const factsByRepo = new Map<string, FactRecord[]>();
+        for (const f of facts) {
+          const repo = f.scope;
+          if (!factsByRepo.has(repo)) factsByRepo.set(repo, []);
+          factsByRepo.get(repo)!.push(f);
+        }
+
+        const discovered = new Set(args.discoveredRepos ?? []);
+        const indexed = new Set(args.indexedRepos ?? []);
+        const gaps: z.infer<typeof CoverageGapSchema>[] = [];
+
+        // 1. Repos discovered but with no facts
+        for (const repo of discovered) {
+          if (!factsByRepo.has(repo)) {
+            const isIndexed = indexed.has(repo);
+            gaps.push({
+              repo,
+              gapType: isIndexed ? "no_facts" : "no_index",
+              detail: isIndexed
+                ? `Repo is indexed but has zero facts. Discovery hasn't run against it yet.`
+                : `Repo is discovered but not yet indexed. Index it first, then run discovery.`,
+              suggestedQueries: isIndexed
+                ? [
+                  "what does this software do and who uses it",
+                  "how does this deploy and to what environment",
+                  "what external services or APIs does this integrate with",
+                ]
+                : [],
+            });
+          }
+        }
+
+        // 2. Repos with only one dimension of facts (all kinds share a pattern)
+        for (const [repo, repoFacts] of factsByRepo) {
+          if (repoFacts.length < 1) continue;
+          const kinds = repoFacts.map((f) => f.kind);
+          const allInfra = kinds.every((k) =>
+            k.includes("deploy") || k.includes("provision") ||
+            k.includes("manages") || k.includes("cluster") ||
+            k.includes("infra") || k.includes("eks") ||
+            k.includes("account") || k.includes("lambda") ||
+            k.includes("runner") || k.includes("bastion")
+          );
+          if (allInfra && repoFacts.length >= 1) {
+            gaps.push({
+              repo,
+              gapType: "single_dimension",
+              detail:
+                `All ${repoFacts.length} fact(s) are infrastructure/deployment. No domain, ownership, or architecture facts.`,
+              suggestedQueries: [
+                "what is the business purpose of this application",
+                "what data model or database does this use",
+                "who owns this and what team maintains it",
+                "what architectural decisions or patterns does this follow",
+              ],
+            });
+          }
+        }
+
+        // 3. Dangling references — values that mention repos with no facts
+        for (const f of facts) {
+          const valueStr = typeof f.value === "string"
+            ? f.value
+            : JSON.stringify(f.value);
+          // Look for repo-path-like references in values
+          const repoRefs = valueStr.match(
+            /(?:sourceRepo|toolSourceRepo|ciTemplateProject|relatedRepos)['":\s]*['"]?([a-zA-Z0-9_-]+\/[a-zA-Z0-9_\/-]+)/g,
+          );
+          if (repoRefs) {
+            for (const match of repoRefs) {
+              const ref = match.replace(
+                /.*?['"]?([a-zA-Z0-9_-]+\/[a-zA-Z0-9_\/-]+).*/,
+                "$1",
+              );
+              if (ref && !factsByRepo.has(ref) && ref !== f.scope) {
+                // Avoid duplicate gap entries for same repo
+                if (
+                  !gaps.some((g) =>
+                    g.repo === ref && g.gapType === "dangling_reference"
+                  )
+                ) {
+                  gaps.push({
+                    repo: ref,
+                    gapType: "dangling_reference",
+                    detail:
+                      `Referenced by fact in ${f.scope} (kind: ${f.kind}) but has no facts of its own.`,
+                    suggestedQueries: [
+                      "what tools or artifacts does this repository produce",
+                      "what is the purpose of this project",
+                      "what other repos consume output from this",
+                    ],
+                  });
+                }
+              }
+            }
+          }
+        }
+
+        // Sort: no_index last (can't act on them), dangling_reference first (high signal)
+        const priority: Record<string, number> = {
+          dangling_reference: 0,
+          single_dimension: 1,
+          no_facts: 2,
+          no_index: 3,
+        };
+        gaps.sort((a, b) =>
+          (priority[a.gapType] ?? 9) - (priority[b.gapType] ?? 9)
+        );
+
+        const limited = gaps.slice(0, args.limit);
+
+        const output: z.infer<typeof CoverageGapsOutputSchema> = {
+          gaps: limited,
+          summary: {
+            totalReposDiscovered: discovered.size,
+            reposWithFacts: factsByRepo.size,
+            reposWithoutFacts:
+              [...discovered].filter((r) => !factsByRepo.has(r)).length,
+            reposWithIndex: indexed.size,
+            singleDimensionRepos:
+              gaps.filter((g) => g.gapType === "single_dimension").length,
+            danglingReferences:
+              gaps.filter((g) => g.gapType === "dangling_reference").length,
+          },
+          generatedAt: now(),
+        };
+
+        const handle = await context.writeResource(
+          "coverage-gaps",
+          "latest-analysis",
+          output,
+        );
+
+        context.logger.info("Coverage gaps: {total} gaps found", {
+          total: limited.length,
+        });
         return { dataHandles: [handle] };
       },
     },

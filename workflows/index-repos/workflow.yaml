@@ -1,0 +1,33 @@
+id: c0a699b4-56be-441a-8fc0-4858f0fa3867
+name: "@twonines/index-repos"
+version: 1
+description: >
+  Index a list of GitLab repositories sequentially. Each repo is
+  cloned, chunked, embedded, and written as a SQLite database for
+  hybrid search by fact-discovery agents. Sequential execution
+  avoids embedding API rate-limit storms.
+
+inputs:
+  required:
+    - repos
+  properties:
+    repos:
+      type: array
+      items: { type: string }
+      description: 'Repo paths to index (e.g. ["o11n/monitoring", "appsvc/backstage"])'
+
+jobs:
+  - name: index
+    description: 'Index each repo sequentially'
+    steps:
+      - name: index-repo
+        forEach:
+          item: repo
+          in: ${{ inputs.repos }}
+          concurrency: 1
+        task:
+          type: model_method
+          modelIdOrName: repo-indexer
+          methodName: index
+          inputs:
+            projectPath: ${{ self.repo }}
