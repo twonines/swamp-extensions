@@ -261,6 +261,25 @@ async function sha256(content: string): Promise<string> {
     .join("");
 }
 
+/** Encode Uint8Array to base64 string. */
+function encodeBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+/** Decode base64 string to Uint8Array. */
+function decodeBase64(str: string): Uint8Array {
+  const binary = atob(str);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
 /** Detect if a file path is binary by extension. */
 function isBinaryPath(path: string): boolean {
   const dot = path.lastIndexOf(".");
@@ -1024,15 +1043,9 @@ export const model = {
           const dbBytes = db.export();
           db.close();
 
-          // Write to local index directory
-          const indexDir = `${Deno.env.get("HOME") ?? "/tmp"}/.repo-indexes`;
-          try {
-            Deno.mkdirSync(indexDir, { recursive: true });
-          } catch { /* exists */ }
-          const dbPath = `${indexDir}/${instanceName}.db`;
-          Deno.writeFileSync(dbPath, dbBytes);
+          // Persist as data artifact (db bytes are base64-encoded for S3 sync)
+          const dbBase64 = encodeBase64(dbBytes);
 
-          // Persist metadata as data artifact
           const handle = await context.writeResource(
             "index",
             instanceName,
@@ -1042,8 +1055,8 @@ export const model = {
               chunkCount: validChunks.length,
               filesIndexed: fileHashes.size,
               indexedAt: new Date().toISOString(),
-              dbPath,
               dbSizeBytes: dbBytes.byteLength,
+              db: dbBase64,
             },
           );
 
@@ -1102,18 +1115,15 @@ export const model = {
           query: args.query,
         });
 
-        // Read index DB from local file
-        const indexDir = `${Deno.env.get("HOME") ?? "/tmp"}/.repo-indexes`;
-        const localDbPath = `${indexDir}/${instanceName}.db`;
-        try {
-          Deno.statSync(localDbPath);
-        } catch {
+        // Read index DB from the data resource
+        const resourceData = await context.readResource(instanceName);
+        if (!resourceData || !resourceData.db) {
           throw new Error(
-            `No index found for ${args.repo} at ${localDbPath}. Run the index method first.`,
+            `No index found for ${args.repo}. Run the index method first.`,
           );
         }
 
-        const dbBytes = Deno.readFileSync(localDbPath);
+        const dbBytes = decodeBase64(resourceData.db as string);
         const db = await openDb(dbBytes, context.logger);
         try {
           // Embed the query
@@ -1187,15 +1197,9 @@ export const model = {
           path: projectPath,
         });
 
-        // Check for existing local index
-        const indexDir = `${Deno.env.get("HOME") ?? "/tmp"}/.repo-indexes`;
-        const existingDbPath = `${indexDir}/${instanceName}.db`;
-        let hasExisting = false;
-        try {
-          Deno.statSync(existingDbPath);
-          hasExisting = true;
-        } catch { /* no existing */ }
-        if (!hasExisting) {
+        // Check for existing index in data resource
+        const existingResource = await context.readResource(instanceName);
+        if (!existingResource || !existingResource.db) {
           context.logger.info(
             "No existing index — falling back to full index",
           );
@@ -1221,8 +1225,8 @@ export const model = {
             cwd: repoDir,
           }).trim();
 
-          // Load existing db into WASM from the file
-          const existingBytes = Deno.readFileSync(existingDbPath);
+          // Load existing db into WASM from the resource
+          const existingBytes = decodeBase64(existingResource.db as string);
           const db = await openDb(existingBytes, context.logger);
 
           try {
@@ -1314,10 +1318,8 @@ export const model = {
             const dbBytes = db.export();
             db.close();
 
-            // Write updated db to local file
-            Deno.writeFileSync(existingDbPath, dbBytes);
-
-            // Persist metadata
+            // Persist as data artifact with base64 db
+            const dbBase64 = encodeBase64(dbBytes);
             const handle = await context.writeResource(
               "index",
               instanceName,
@@ -1327,8 +1329,8 @@ export const model = {
                 chunkCount: totalChunks,
                 filesIndexed: currentHashes.size,
                 indexedAt: new Date().toISOString(),
-                dbPath: existingDbPath,
                 dbSizeBytes: dbBytes.byteLength,
+                db: dbBase64,
               },
             );
 
@@ -1362,19 +1364,15 @@ export const model = {
       ) => {
         const instanceName = args.repo.replaceAll("/", "--");
 
-        const indexDir = `${Deno.env.get("HOME") ?? "/tmp"}/.repo-indexes`;
-        const dbPath = `${indexDir}/${instanceName}.db`;
-        try {
-          Deno.statSync(dbPath);
-        } catch {
+        const resourceData = await context.readResource(instanceName);
+        if (!resourceData || !resourceData.db) {
           throw new Error(
-            `No index found for ${args.repo} at ${dbPath}. Run the index method first.`,
+            `No index found for ${args.repo}. Run the index method first.`,
           );
         }
 
-        const stat = Deno.statSync(dbPath);
-        const dbFileBytes = Deno.readFileSync(dbPath);
-        const db = await openDb(dbFileBytes, context.logger);
+        const dbBytes = decodeBase64(resourceData.db as string);
+        const db = await openDb(dbBytes, context.logger);
         try {
           const output = {
             repo: args.repo,
@@ -1383,7 +1381,7 @@ export const model = {
             embedModel: getMeta(db, "embed_model") ?? "unknown",
             embedDim: Number(getMeta(db, "embed_dim") ?? "0"),
             indexedAt: getMeta(db, "indexed_at") ?? "unknown",
-            dbSizeBytes: stat.size,
+            dbSizeBytes: dbBytes.byteLength,
           };
 
           const handle = await context.writeResource(
