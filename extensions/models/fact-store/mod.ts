@@ -186,7 +186,7 @@ type Ctx = any;
  */
 export const model = {
   type: "@twonines/fact-store",
-  version: "2026.07.08.2",
+  version: "2026.07.09.1",
   description:
     "Stores, validates, and serves organizational facts for AI agent consumption. " +
     "Supports a propose→review→activate lifecycle with adversarial validation (ferret/mole pattern).",
@@ -659,7 +659,8 @@ export const model = {
 
     list_proposals: {
       description:
-        "List proposals filtered by status. Used by mole to find work, by ferret to check rejections.",
+        "List proposals filtered by status. Supports pagination via offset+limit. " +
+        "Used by mole to find work, by ferret to check rejections.",
       arguments: z.object({
         status: z.enum([
           "proposed",
@@ -668,12 +669,18 @@ export const model = {
           "withdrawn",
           "all",
         ]).default("proposed"),
-        limit: z.number().default(50),
+        offset: z.number().default(0).describe(
+          "Number of matching proposals to skip (for pagination)",
+        ),
+        limit: z.number().default(50).describe(
+          "Maximum proposals to return (max 500)",
+        ),
       }),
       execute: async (
-        args: { status: string; limit: number },
+        args: { status: string; offset: number; limit: number },
         context: Ctx,
       ) => {
+        const effectiveLimit = Math.min(args.limit, 500);
         const allData = await context.dataRepository.findAllForModel(
           context.modelType,
           context.modelId,
@@ -687,7 +694,10 @@ export const model = {
             return true;
           });
         const total = matches.length;
-        const matched = matches.slice(0, args.limit);
+        const matched = matches.slice(
+          args.offset,
+          args.offset + effectiveLimit,
+        );
 
         const proposals = [];
         for (const d of matched) {
@@ -706,13 +716,13 @@ export const model = {
         const result: z.infer<typeof ProposalListSchema> = {
           proposals,
           total,
-          truncated: total > proposals.length,
+          truncated: args.offset + proposals.length < total,
           filter: { status: args.status },
         };
 
         const handle = await context.writeResource(
           "proposal-list",
-          `list--${args.status}`,
+          `list--${args.status}--${args.offset}`,
           result,
         );
         return { dataHandles: [handle] };
@@ -720,24 +730,32 @@ export const model = {
     },
 
     list_facts: {
-      description: "List active facts, optionally filtered by scope or kind.",
+      description: "List active facts, optionally filtered by scope or kind. " +
+        "Supports pagination via offset+limit.",
       arguments: z.object({
         scope: z.string().optional().describe("Filter by scope"),
         kind: z.string().optional().describe("Filter by fact kind"),
         identityValue: z.string().optional().describe(
           "Filter by subject identity",
         ),
-        limit: z.number().default(100),
+        offset: z.number().default(0).describe(
+          "Number of matching facts to skip (for pagination)",
+        ),
+        limit: z.number().default(100).describe(
+          "Maximum facts to return (max 500)",
+        ),
       }),
       execute: async (
         args: {
           scope?: string;
           kind?: string;
           identityValue?: string;
+          offset: number;
           limit: number;
         },
         context: Ctx,
       ) => {
+        const effectiveLimit = Math.min(args.limit, 500);
         const allData = await context.dataRepository.findAllForModel(
           context.modelType,
           context.modelId,
@@ -755,7 +773,10 @@ export const model = {
             return true;
           });
         const total = matches.length;
-        const matched = matches.slice(0, args.limit);
+        const matched = matches.slice(
+          args.offset,
+          args.offset + effectiveLimit,
+        );
 
         const facts = [];
         for (const d of matched) {
@@ -774,12 +795,12 @@ export const model = {
         const result: z.infer<typeof FactListSchema> = {
           facts,
           total,
-          truncated: total > facts.length,
+          truncated: args.offset + facts.length < total,
         };
 
         const handle = await context.writeResource(
           "fact-list",
-          `list--${args.kind ?? "all"}`,
+          `list--${args.kind ?? "all"}--${args.offset}`,
           result,
         );
         return { dataHandles: [handle] };

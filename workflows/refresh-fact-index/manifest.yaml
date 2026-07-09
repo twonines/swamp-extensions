@@ -1,0 +1,31 @@
+manifestVersion: 1
+name: "@twonines/refresh-fact-index"
+version: "2026.07.07.1"
+description: >
+  Refresh the local fact-store index — query the fact-store for
+  current active facts and constraints, then run the fact-store-index
+  exporter to materialize a fresh SQLite file (with FTS5 and vector
+  embeddings) for downstream consumers like `jitter`.
+
+  Meant for scheduled use. The exporter model instance is expected to
+  wire `truth_packet` via a `${{ data.latest("<facts>", "query--global"
+  ).attributes }}` globalArgument CEL expression, which resolves fresh
+  after the query step completes.
+repository: "https://codeberg.org/twonines/swamp-extensions"
+paths:
+  base: manifest
+workflows:
+  - workflow.yaml
+dependencies:
+  - "@twonines/fact-store"
+  - "@twonines/fact-store-index"
+additionalFiles:
+  - README.md
+  - LICENSE.md
+labels:
+  - fact-store
+  - fact-store-index
+  - jitter
+  - workflow
+  - hybrid-search
+  - agent-context
