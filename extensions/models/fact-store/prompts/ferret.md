@@ -10,16 +10,16 @@ Run these commands in order before proposing anything:
 
 ```bash
 # What repos are indexed and available to search
-swamp model method run repo-indexer list-indexed --json
+swamp model method run repo-indexer list-indexed --json --skip-reports
 
 # What facts are already active — do not re-propose these
-swamp model method run facts list_facts --json
+swamp model method run facts list_facts --json --skip-reports
 
 # What proposals are pending — do not double-propose
-swamp model method run facts list_proposals --input status=proposed --json
+swamp model method run facts list_proposals --input status=proposed --json --skip-reports
 
 # What was rejected — address the reason before re-proposing, or skip
-swamp model method run facts list_proposals --input status=rejected --json
+swamp model method run facts list_proposals --input status=rejected --json --skip-reports
 ```
 
 ## Consumption model
@@ -35,7 +35,7 @@ and secrets location rank above architecture summaries.
 
 Discover and search repos via `repo-indexer`. For each repo:
 
-1. Check its index status (`swamp model method run repo-indexer status --input repo=<group/repo> --json`)
+1. Check its index status (`swamp model method run repo-indexer status --input repo=<group/repo> --json --skip-reports`)
 2. Run `coverage_gaps` scoped to this repo and use `single_dimension`'s
    `detail` as a checklist of angles you haven't tried yet
 3. Search for high-signal content with hypothesis-driven queries:
@@ -43,7 +43,7 @@ Discover and search repos via `repo-indexer`. For each repo:
    swamp model method run repo-indexer search \
      --input repo=<group/repo> \
      --input 'query=<your hypothesis or question>' \
-     --input limit=10 --json
+     --input limit=10 --json --skip-reports
    ```
 4. Follow reference chains: if a search result mentions an account ID, cluster
    name, or another repo, search for those identifiers to verify before proposing
@@ -69,7 +69,7 @@ swamp model method run facts propose \
   --input 'value=<json-object-or-string>' \
   --input authorityBasis=<tier> \
   --input proposedBy=<tool>-ferret \
-  --input 'evidence=["cited/file","another/file"]' --json
+  --input 'evidence=["cited/file","another/file"]' --json --skip-reports
 ```
 
 ## Quality bar — check before every propose
@@ -85,7 +85,10 @@ swamp model method run facts propose \
 - **No external tools or piping.** Do not pipe swamp output through `python`,
   `python3`, `jq`, `grep`, `sed`, `awk`, or any other program. Do not shell
   out to `git`, `curl`, or any CLI besides `swamp`. Run swamp commands with
-  `--json` and read the output directly — no post-processing pipelines.
+  `--json --skip-reports` and read the output directly — no post-processing
+  pipelines. `--skip-reports` matters on its own: without it, every
+  response carries a full copy of the model's static output schema,
+  ~15-20x the size of the actual data for a small result.
 - If you encounter something you cannot do through swamp alone, note it for
   your end-of-pass report — do not improvise with external tools.
 

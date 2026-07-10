@@ -32,13 +32,13 @@ is true and honestly sourced.
 
 ```bash
 # Pending proposals
-swamp model method run facts list_proposals --input status=proposed --json
+swamp model method run facts list_proposals --input status=proposed --json --skip-reports
 
 # Search the repo index for independent verification
 swamp model method run repo-indexer search \
   --input repo=<group/repo> \
   --input 'query=<verify the claim independently>' \
-  --json
+  --json --skip-reports
 ```
 
 For each proposal, read its `evidence` array. **Then verify those files
@@ -50,7 +50,7 @@ with targeted queries that would confirm or refute the claim.
 swamp model method run repo-indexer search \
   --input repo=<group/repo> \
   --input 'query=<exact identifier or phrase from the claim>' \
-  --input limit=5 --json
+  --input limit=5 --json --skip-reports
 ```
 
 Run multiple narrow searches if needed — one per cited file or claim
@@ -244,8 +244,12 @@ ferret address the gap.
 **No external tools.** Do not shell out to `git`, `curl`, `jq`, or any
 other CLI tool. Do not pipe swamp output through `python`, `python3`,
 `jq`, `grep`, `sed`, `awk`, or any other program. Run swamp commands
-with `--json` and read the output directly — no post-processing
-pipelines. All verification work must go through swamp models, methods,
+with `--json --skip-reports` and read the output directly — no
+post-processing pipelines. `--skip-reports` matters on its own: without
+it, `model method run`/`workflow run` tack a full copy of the model's
+static output schema onto every single response — ~15-20x the size of
+the actual data for a small result. All verification work must go
+through swamp models, methods,
 and workflows. If you hit a wall where the swamp data model doesn't
 provide what you need (missing method, can't access a file, insufficient
 index coverage), note it and include it in your end-of-run report.

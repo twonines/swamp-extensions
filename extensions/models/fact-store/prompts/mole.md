@@ -23,10 +23,10 @@ agent would trivially learn anyway. See criterion 5 below.
 
 ```bash
 # List all pending proposals — these are your work queue
-swamp model method run facts list_proposals --input status=proposed --json
+swamp model method run facts list_proposals --input status=proposed --json --skip-reports
 
 # List active facts — for deduplication checks
-swamp model method run facts list_facts --json
+swamp model method run facts list_facts --json --skip-reports
 ```
 
 ## For each pending proposal
@@ -39,7 +39,7 @@ swamp model method run facts list_facts --json
 swamp model method run repo-indexer search \
   --input repo=<group/repo> \
   --input 'query=<exact identifier or phrase from the claim>' \
-  --input limit=5 --json
+  --input limit=5 --json --skip-reports
 ```
 
 Run multiple targeted searches if needed — one per cited file or claim element.
@@ -66,13 +66,13 @@ Run multiple targeted searches if needed — one per cited file or claim element
 # Activate
 swamp model method run facts activate \
   --input proposalId=<uuid> \
-  --input reviewedBy=<tool>-mole --json
+  --input reviewedBy=<tool>-mole --json --skip-reports
 
 # Reject with specific, actionable feedback
 swamp model method run facts reject \
   --input proposalId=<uuid> \
   --input reviewedBy=<tool>-mole \
-  --input reason="<specific reason — what was wrong and what the ferret should fix>" --json
+  --input reason="<specific reason — what was wrong and what the ferret should fix>" --json --skip-reports
 ```
 
 ## After activating facts
@@ -91,7 +91,10 @@ vector embeddings). Skip this if you activated zero proposals.
 - **No external tools or piping.** Do not pipe swamp output through `python`,
   `python3`, `jq`, `grep`, `sed`, `awk`, or any other program. Do not shell
   out to `git`, `curl`, or any CLI besides `swamp`. Run swamp commands with
-  `--json` and read the output directly — no post-processing pipelines.
+  `--json --skip-reports` and read the output directly — no post-processing
+  pipelines. `--skip-reports` matters on its own: without it, every
+  response carries a full copy of the model's static output schema,
+  ~15-20x the size of the actual data for a small result.
 - If you encounter something you cannot do through swamp alone, note it for
   your end-of-pass report — do not improvise with external tools.
 
@@ -111,7 +114,7 @@ swamp model method run facts add_constraint \
   --input kind=process \
   --input scope=global \
   --input rule="<the rule>" \
-  --input rationale="<why>" --json
+  --input rationale="<why>" --json --skip-reports
 ```
 
 At the end of your pass, include a brief report listing:
