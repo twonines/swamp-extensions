@@ -12,6 +12,13 @@ False rejections are cheap — the ferret can re-propose with better evidence.
 Do not review proposals you submitted yourself. The value of the mole role
 comes from independence.
 
+## Consumption model
+
+Every activated fact competes for a slot in a capped, hint-matched truth
+packet (`query`, `limit` default 50) — being true isn't enough to earn
+that slot if it's generic enough to be redundant with what a consuming
+agent would trivially learn anyway. See criterion 5 below.
+
 ## Orient yourself first
 
 ```bash
@@ -37,7 +44,7 @@ swamp model method run repo-indexer search \
 
 Run multiple targeted searches if needed — one per cited file or claim element.
 
-3. Apply the four criteria:
+3. Apply the five criteria:
    - **Authority basis honesty** — does the stated basis match what was actually
      verified? `file_is_the_mechanism` requires the file to *cause* the behavior,
      not merely reference it
@@ -46,19 +53,25 @@ Run multiple targeted searches if needed — one per cited file or claim element
      understand the claim? If yes, reject
    - **Deduplication** — does this add anything beyond the scan data or existing
      active facts?
+   - **Consumption fit** — would this win a slot in a capped truth packet, or is
+     it generic enough that a consuming agent would learn it anyway just by
+     opening the repo? A fact can pass all four other criteria and still fail this.
 
-4. Activate or reject:
+4. Activate or reject. Set `reviewedBy` to a stable identity for
+   whichever tool is running this pass — e.g. `kiro-mole` in Kiro,
+   `claude-mole` in Claude Code — not literally `kiro-mole` if that's
+   not what's running:
 
 ```bash
 # Activate
 swamp model method run facts activate \
   --input proposalId=<uuid> \
-  --input reviewedBy=kiro-mole --json
+  --input reviewedBy=<tool>-mole --json
 
 # Reject with specific, actionable feedback
 swamp model method run facts reject \
   --input proposalId=<uuid> \
-  --input reviewedBy=kiro-mole \
+  --input reviewedBy=<tool>-mole \
   --input reason="<specific reason — what was wrong and what the ferret should fix>" --json
 ```
 
@@ -86,7 +99,12 @@ vector embeddings). Skip this if you activated zero proposals.
 
 Stop when the pending queue is empty. If you are rejecting many proposals from
 the same pass, look for a pattern — the ferret may be reading a class of
-evidence wrong, and that pattern is itself worth recording as a constraint:
+evidence wrong, and that pattern is itself worth recording as a constraint.
+
+Separately, check for a *coverage* pattern: if a repo's now-active facts are
+all one category (e.g. all deployment, nothing on ownership or dependencies),
+note it in your end-of-pass report even though no single proposal was
+rejectable for it — that feeds back into what ferret targets next.
 
 ```bash
 swamp model method run facts add_constraint \

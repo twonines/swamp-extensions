@@ -10,25 +10,61 @@ indexes, reason about what you find, and propose operational facts to
 `@twonines/fact-store`. Your proposals are reviewed adversarially by the
 mole; assume your work will be challenged.
 
+## How this gets consumed
+
+Facts don't get browsed — they get injected. Consuming agents (via the
+`consult-facts` skill, backed by `jitter`) call `query` with the current
+task's `scope` and a handful of `hints`, and get back a truth packet
+capped at `limit` (default 50, with a `truncated` flag when there's
+more). A fact only reaches an agent when it matches that scope/hint
+combination at the right moment — there's no "browse the whole store."
+
+Two consequences that should shape what you propose:
+
+- **Missing a category isn't a smaller answer, it's no answer.** If a
+  repo only has a deployment fact and the conversation is about who
+  owns it, `query` has nothing to return for that hint. The gap isn't
+  visible as "incomplete" to the consumer — it's invisible.
+- **Facts compete for a capped slot.** A pile of true-but-generic facts
+  can crowd out the one fact that would have actually mattered for a
+  given scope. Aim for fewer, higher-leverage facts per repo, not more
+  facts overall.
+
 ## What to look for
 
 Any fact that would save an engineer real exploration time. The test is:
 "If someone asked me about this repo/service/system tomorrow, would
 knowing this fact let them skip digging through the code?"
 
-There are no fixed categories. Here are example questions to ask the
-index — use these as starting points, not as an exhaustive list:
+Not all angles are equally likely to matter to a consumer. Work roughly
+in this order, and don't consider a repo done until you've at least
+tried 1–4:
 
-- What does this software do? Who uses it? What problem does it solve?
-- How does it deploy? What accounts/clusters/environments does it target?
+1. **Cross-repo / cross-service connections** — "the real implementation
+   lives in repo Y," "this pipeline triggers that deployment." This is
+   the one thing a search *inside* a single repo can never surface —
+   it's the whole reason a fact-store exists on top of per-repo search.
+2. **Deployment targets** — account, cluster, environment. Wrong here
+   isn't just a slower answer, it's a dangerous one.
+3. **Ownership / escalation path** — who to page, what channel, what
+   team.
+4. **Secrets location and mechanism** (not values) — where credentials
+   live and how they're retrieved.
+5. **Constraints that contradict what the code alone suggests** — these
+   usually belong in `add_constraint` (human-authored), but flag
+   candidates you find so a human can decide.
+6. **What does this do / architecture summary** — lowest priority of
+   the six. It's the easiest single query to satisfy (a README often
+   answers it directly), which is exactly why it's easy to stop here
+   without noticing you haven't tried 1–4 yet.
+
+Beyond this ranking there are no fixed categories — use these as further
+starting points, not an exhaustive list:
+
 - What external services does it integrate with? (APIs, SaaS, identity providers)
 - What's the data model? What database, ORM, schema?
 - What architectural patterns does it follow? (offline-first, event-driven, monolith, etc.)
-- How do repos connect? (tool in X consumed by pipeline in Y, shared library, artifact flow)
-- Who owns this? What team, what CODEOWNERS patterns?
-- What key decisions constrain the system? (ADRs, design docs, trade-offs)
 - What conventions does it enforce? (linting, CI templates, code structure)
-- What security posture does it have? (auth mechanism, secrets management, network boundaries)
 - What's deprecated, migrating, or planned for removal?
 - What's the release/promotion strategy? (tag-based, environment promotion, feature flags)
 
@@ -204,14 +240,42 @@ For each repo in the scope of this pass:
 
 1. Check existing facts and your prior rejections for this repo
 2. Ensure the repo is indexed (see below)
-3. Form hypotheses — what might be true about this repo that isn't yet known?
-4. Search the repo index with hypothesis-driven queries
-5. Read the top results; follow threads that look promising
-6. For each confirmed insight, call `propose`
-7. Move to the next repo
+3. Run `coverage_gaps` scoped to this repo and read its `detail` — it
+   tells you which angle(s) are missing in plain language (real, derived
+   from actual facts on record — not a canned list). Use that plus the
+   priority list above to decide what to search for yourself — see
+   "Coverage gate" below
+4. Form hypotheses — what might be true about this repo that isn't yet known?
+5. Search the repo index with hypothesis-driven queries
+6. Read the top results; follow threads that look promising
+7. For each confirmed insight, call `propose`
+8. Move to the next repo
 
-Stop when you've covered the targeted repos. Don't pad — a few well-supported
-facts are worth more than many weak ones.
+**"Covered" means attempted, not necessarily succeeded.** A priority
+category you searched and genuinely found nothing for is covered — say
+so in your end-of-pass report and leave it. A category you never queried
+is not covered, regardless of how many facts you already proposed for
+that repo.
+
+Don't pad — a few well-supported facts are worth more than many weak
+ones. But padding means *redundant or low-signal* facts, not "stopping
+before category 4 because category 6 already gave you something." Those
+are different failure modes; don't let avoiding one cause the other.
+
+## Coverage gate — before moving to the next repo
+
+```bash
+swamp model method run facts coverage_gaps \
+  --input 'discoveredRepos=["<group/repo>"]' --json
+```
+
+If the repo comes back `single_dimension`, its `detail` names which
+angle(s) are missing (e.g. "no domain, ownership, or architecture
+facts"). Run at least one targeted search per missing angle from the
+priority list before considering the repo done — even if your current
+facts already feel sufficient. A repo can look finished (it has an
+activated fact) while still being invisible to most of the questions a
+consuming agent might actually ask about it.
 
 ## Ensuring repos are indexed
 
@@ -265,7 +329,9 @@ swamp model method run facts coverage_gaps \
 Priority order from the output:
 1. **dangling_reference** — a repo mentioned by existing facts but with
    no facts of its own. High signal — something depends on it.
-2. **single_dimension** — a repo with only infra facts. Ask domain
-   questions: purpose, users, architecture, ownership.
-3. **no_facts** — indexed but unexplored. Start with broad questions.
+2. **single_dimension** — a repo with only one angle of facts (often
+   just deployment). Run it through the "Coverage gate" above before
+   moving on — don't just add one more fact from the same angle.
+3. **no_facts** — indexed but unexplored. Start with the priority list
+   in "What to look for," not with whatever's easiest to find.
 4. **no_index** — not yet indexed. Index it first.
