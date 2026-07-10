@@ -52,12 +52,17 @@ const SCHEMA_VERSION = 1;
  *   3. Build an in-memory SQLite (FTS5 + BLOB embeddings) via
  *      @sqlite.org/sqlite-wasm.
  *   4. Serialize the database to bytes, checksum, and write to disk.
+ *
+ * Returns the raw `bytes` alongside `state` so the caller (`mod.ts`) can
+ * also persist the database as a swamp resource — the local disk write
+ * this function does is only reachable on whichever machine ran export;
+ * the resource write makes the same bytes portable to any session.
  */
 export async function runExport(
   truthPacket: TruthPacket,
   globalArgs: GlobalArgs,
   logger: Logger,
-): Promise<State> {
+): Promise<{ state: State; bytes: Uint8Array }> {
   const facts = truthPacket.facts ?? [];
   const constraints = truthPacket.constraints ?? [];
 
@@ -104,7 +109,7 @@ export async function runExport(
   await Deno.writeFile(path, bytes);
   const sha = await sha256Hex(bytes);
 
-  return {
+  const state: State = {
     exported_at: new Date().toISOString(),
     output_path: path,
     embed_url: globalArgs.embed_url,
@@ -115,6 +120,7 @@ export async function runExport(
     output_bytes: bytes.byteLength,
     sha256: sha,
   };
+  return { state, bytes };
 }
 
 // ---------------------------------------------------------------------------
@@ -393,6 +399,285 @@ const SCHEMA_SQL = `
     schema_version INTEGER NOT NULL
   );
 `;
+
+// ---------------------------------------------------------------------------
+// Hybrid search (FTS5 + vector + RRF) — mirrors the algorithm in
+// @twonines/repo-indexer's mod.ts, adapted to this file's raw
+// sqlite3.oo1.DB calls (this extension doesn't share repo-indexer's
+// WasmDb wrapper — each extension's _lib/ is self-contained).
+// ---------------------------------------------------------------------------
+
+const RRF_K = 60;
+const FTS_CANDIDATES = 50;
+const VEC_CANDIDATES = 50;
+const DEFAULT_SEARCH_LIMIT = 10;
+
+/** Decode a BLOB (Uint8Array or ArrayBuffer) back to Float32Array. */
+function blobToFloat(blob: Uint8Array | ArrayBuffer): Float32Array {
+  const buf = blob instanceof Uint8Array ? blob.buffer : blob;
+  const offset = blob instanceof Uint8Array ? blob.byteOffset : 0;
+  const len = blob instanceof Uint8Array
+    ? blob.byteLength
+    : (blob as ArrayBuffer).byteLength;
+  // Copy to a properly aligned buffer — SQLite-returned BLOBs aren't
+  // guaranteed 4-byte aligned, and Float32Array requires it.
+  const copy = new ArrayBuffer(len);
+  new Uint8Array(copy).set(new Uint8Array(buf, offset, len));
+  return new Float32Array(copy);
+}
+
+/** Cosine similarity between two Float32Arrays. */
+function cosine(a: Float32Array, b: Float32Array): number {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  if (na === 0 || nb === 0) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+/** Run a SELECT and return all result rows as objects. */
+function selectAll<T = Record<string, any>>(
+  db: any,
+  sql: string,
+  bind: unknown[] = [],
+): T[] {
+  const rows: T[] = [];
+  db.exec({
+    sql,
+    bind,
+    rowMode: "object",
+    callback: (row: T) => {
+      rows.push(row);
+    },
+  });
+  return rows;
+}
+
+/**
+ * Open a sqlite3-wasm in-memory DB from serialized bytes (the same
+ * bytes `buildSqlite` produces and `export`/`index` persist). Mirrors
+ * @twonines/repo-indexer's `WasmDb.fromBytes` — see that file if this
+ * ever needs to change; the deserialize flags and allocation pattern
+ * are copied from there deliberately, not reinvented.
+ */
+async function openDbFromBytes(
+  bytes: Uint8Array,
+  logger: Logger,
+): Promise<any> {
+  const sqlite3 = await loadSqlite3(logger);
+  const p = sqlite3.wasm.allocFromTypedArray(bytes);
+  const db = new sqlite3.oo1.DB({ filename: ":memory:", flags: "c" });
+  const rc = sqlite3.capi.sqlite3_deserialize(
+    db.pointer,
+    "main",
+    p,
+    bytes.byteLength,
+    bytes.byteLength,
+    // SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_RESIZEABLE
+    0x01 | 0x02,
+  );
+  if (rc !== 0) {
+    sqlite3.wasm.dealloc(p);
+    throw new Error(`sqlite3_deserialize failed with rc=${rc}`);
+  }
+  return db;
+}
+
+/** One matched fact, reassembled into the shape callers already know from fact-store's query method. */
+export interface FactSearchHit {
+  id: string;
+  kind: string;
+  scope: string;
+  subjectRef: {
+    refType: string;
+    identityKind: string;
+    identityValue: string;
+  };
+  value: unknown;
+  authorityBasis: string;
+  proposedBy: string | null;
+  activatedBy: string | null;
+  createdAt: string | null;
+  activatedAt: string | null;
+  evidence: string[];
+  score: number;
+}
+
+/** One matched constraint. */
+export interface ConstraintSearchHit {
+  id: string;
+  kind: string;
+  scope: string;
+  rule: string;
+  rationale: string | null;
+  appliesTo: string[];
+  createdAt: string | null;
+  score: number;
+}
+
+export interface SearchOutput {
+  query: string;
+  facts: FactSearchHit[];
+  constraints: ConstraintSearchHit[];
+  totalChunks: number;
+  searchedAt: string;
+}
+
+/**
+ * Run hybrid search (FTS5 keyword + vector cosine, RRF-fused) against
+ * both the facts and constraints tables of a serialized index. Opens
+ * the DB fresh from bytes each call — callers should fetch the index
+ * resource once and can reuse the same bytes across multiple queries
+ * within one session if they want to avoid re-fetching, but this
+ * function itself always deserializes fresh (no cross-call DB caching,
+ * to avoid holding wasm memory open indefinitely inside a long-running
+ * agent process).
+ */
+export async function runSearch(
+  bytes: Uint8Array,
+  queryText: string,
+  globalArgs: GlobalArgs,
+  logger: Logger,
+  limit: number = DEFAULT_SEARCH_LIMIT,
+): Promise<SearchOutput> {
+  const db = await openDbFromBytes(bytes, logger);
+  try {
+    const [queryVec] = await embedTexts([queryText], globalArgs, logger);
+
+    const facts = searchTable<FactSearchHit>(
+      db,
+      queryVec,
+      queryText,
+      limit,
+      "facts",
+      "facts_fts",
+      (row) => ({
+        id: row.id,
+        kind: row.kind,
+        scope: row.scope,
+        subjectRef: {
+          refType: row.subject_ref_type,
+          identityKind: row.subject_identity_kind,
+          identityValue: row.subject_identity_value,
+        },
+        value: JSON.parse(row.value_json ?? "null"),
+        authorityBasis: row.authority_basis,
+        proposedBy: row.proposed_by ?? null,
+        activatedBy: row.activated_by ?? null,
+        createdAt: row.created_at ?? null,
+        activatedAt: row.activated_at ?? null,
+        evidence: JSON.parse(row.evidence_json ?? "[]"),
+        score: 0, // overwritten by searchTable with the RRF score
+      }),
+    );
+
+    const constraints = searchTable<ConstraintSearchHit>(
+      db,
+      queryVec,
+      queryText,
+      limit,
+      "constraints",
+      "constraints_fts",
+      (row) => ({
+        id: row.id,
+        kind: row.kind,
+        scope: row.scope,
+        rule: row.rule,
+        rationale: row.rationale ?? null,
+        appliesTo: JSON.parse(row.applies_to_json ?? "[]"),
+        createdAt: row.created_at ?? null,
+        score: 0,
+      }),
+    );
+
+    const totalChunksRow = selectAll<{ n: number }>(
+      db,
+      `SELECT (SELECT COUNT(*) FROM facts) + (SELECT COUNT(*) FROM constraints) AS n`,
+    );
+
+    return {
+      query: queryText,
+      facts,
+      constraints,
+      totalChunks: totalChunksRow[0]?.n ?? 0,
+      searchedAt: new Date().toISOString(),
+    };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Shared RRF-fusion search over one table + its FTS5 shadow table.
+ * `mapRow` converts a raw DB row (snake_case columns) into the public
+ * hit shape; this function fills in `score` from the RRF fusion after.
+ */
+function searchTable<T extends { score: number }>(
+  db: any,
+  queryVec: Float32Array,
+  queryText: string,
+  limit: number,
+  table: string,
+  ftsTable: string,
+  mapRow: (row: any) => T,
+): T[] {
+  // --- FTS5 keyword search ---
+  let ftsResults: Array<{ id: number; rank: number }> = [];
+  try {
+    ftsResults = selectAll<{ id: number; rank: number }>(
+      db,
+      `SELECT rowid AS id, rank FROM ${ftsTable} WHERE ${ftsTable} MATCH ? ORDER BY rank LIMIT ?`,
+      [queryText, FTS_CANDIDATES],
+    );
+  } catch {
+    // FTS5 MATCH can throw on invalid query syntax (e.g. bare
+    // punctuation) — fall back to vector-only rather than failing
+    // the whole search.
+    ftsResults = [];
+  }
+
+  // --- Vector search (brute force cosine over every row's embedding) ---
+  const embeddingRows = selectAll<{ id: number; embedding: Uint8Array | null }>(
+    db,
+    `SELECT rowid AS id, embedding FROM ${table} WHERE embedding IS NOT NULL`,
+  );
+  const vecScores: Array<{ id: number; score: number }> = [];
+  for (const row of embeddingRows) {
+    if (!row.embedding) continue;
+    const vec = blobToFloat(row.embedding);
+    vecScores.push({ id: row.id, score: cosine(queryVec, vec) });
+  }
+  vecScores.sort((a, b) => b.score - a.score);
+  const vecTop = vecScores.slice(0, VEC_CANDIDATES);
+
+  // --- RRF fusion ---
+  const rrfScores = new Map<number, number>();
+  for (let i = 0; i < ftsResults.length; i++) {
+    const id = ftsResults[i].id;
+    rrfScores.set(id, (rrfScores.get(id) ?? 0) + 1 / (RRF_K + i + 1));
+  }
+  for (let i = 0; i < vecTop.length; i++) {
+    const id = vecTop[i].id;
+    rrfScores.set(id, (rrfScores.get(id) ?? 0) + 1 / (RRF_K + i + 1));
+  }
+
+  const ranked = [...rrfScores.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit);
+
+  const results: T[] = [];
+  for (const [id, score] of ranked) {
+    const rows = selectAll(db, `SELECT * FROM ${table} WHERE rowid = ?`, [id]);
+    const row = rows[0];
+    if (row) {
+      results.push({ ...mapRow(row), score });
+    }
+  }
+  return results;
+}
 
 // ---------------------------------------------------------------------------
 // Fact / constraint flattening

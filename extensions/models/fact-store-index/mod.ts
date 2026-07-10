@@ -1,18 +1,22 @@
 /**
- * Exporter model for @twonines/fact-store-index.
+ * Exporter + search model for @twonines/fact-store-index.
  *
- * Takes the truth-packet output of `@twonines/fact-store`'s `query`
- * method, computes embeddings against any OpenAI-compatible endpoint,
- * and writes a portable SQLite file (FTS5 full-text indexes + raw f32
- * vector BLOBs) that downstream consumers can open for sub-100ms
- * hybrid retrieval.
+ * `export` takes the truth-packet output of `@twonines/fact-store`'s
+ * `query` method, computes embeddings against any OpenAI-compatible
+ * endpoint, and writes a portable SQLite file (FTS5 full-text indexes +
+ * raw f32 vector BLOBs) — both to local disk and as a swamp `index`
+ * resource. `search` fetches that resource, opens it in memory, and
+ * runs hybrid FTS5 + vector search (RRF-fused) — the same real
+ * retrieval quality as reading ~/.jitter/facts.db directly, but
+ * portable to any session rather than tied to whichever machine last
+ * ran export.
  *
  * @module
  */
 
 // deno-lint-ignore-file no-import-prefix
 import { z } from "npm:zod@4";
-import { runExport } from "./_lib/impl.ts";
+import { runExport, runSearch } from "./_lib/impl.ts";
 
 // ---------------------------------------------------------------------------
 // Truth-packet input schemas (defined before GlobalArgs so the packet can
@@ -188,25 +192,122 @@ export const StateSchema = z.object({
 /** Inferred state type. */
 export type State = z.infer<typeof StateSchema>;
 
+/**
+ * Zod schema for the `index` resource — the actual SQLite database
+ * bytes, base64-encoded, stored as a swamp resource rather than only
+ * written to local disk. This is what makes the export portable: any
+ * session with access to this model's data (not just whichever machine
+ * last ran `export`) can fetch the current index and open it locally,
+ * mirroring the pattern @twonines/repo-indexer already uses for its
+ * per-repo indexes.
+ */
+export const IndexSchema = z.object({
+  db: z.string().describe("Base64-encoded SQLite database bytes"),
+  exported_at: z.string(),
+  embed_model: z.string(),
+  embed_dim: z.number().int(),
+  fact_count: z.number().int(),
+  constraint_count: z.number().int(),
+  sha256: z.string(),
+});
+
+/** Inferred index type. */
+export type Index = z.infer<typeof IndexSchema>;
+
+/**
+ * Zod schema for a single matched fact returned by `search`. Mirrors
+ * the shape callers already know from `@twonines/fact-store`'s `query`
+ * method, plus a relevance `score` from the RRF fusion.
+ */
+const FactHitSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  scope: z.string(),
+  subjectRef: SubjectRefSchema,
+  value: z.unknown(),
+  authorityBasis: z.string(),
+  proposedBy: z.string().nullable(),
+  activatedBy: z.string().nullable(),
+  createdAt: z.string().nullable(),
+  activatedAt: z.string().nullable(),
+  evidence: z.array(z.string()),
+  score: z.number(),
+});
+
+/** Zod schema for a single matched constraint returned by `search`. */
+const ConstraintHitSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  scope: z.string(),
+  rule: z.string(),
+  rationale: z.string().nullable(),
+  appliesTo: z.array(z.string()),
+  createdAt: z.string().nullable(),
+  score: z.number(),
+});
+
+/**
+ * Zod schema for the `search` resource — hybrid FTS5 + vector results
+ * against the current index, fused via RRF. Short-lived, like
+ * @twonines/repo-indexer's own `search` resource: it's a point-in-time
+ * answer, not something meant to accumulate indefinitely.
+ */
+export const SearchOutputSchema = z.object({
+  query: z.string(),
+  facts: z.array(FactHitSchema),
+  constraints: z.array(ConstraintHitSchema),
+  totalChunks: z.number().int(),
+  searchedAt: z.string(),
+});
+
+/** Inferred search-output type. */
+export type SearchOutput = z.infer<typeof SearchOutputSchema>;
+
 // deno-lint-ignore no-explicit-any
 type Ctx = any;
+
+/** Encode bytes to a base64 string without pulling in a std dependency. */
+function encodeBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+/** Decode a base64 string back to bytes without pulling in a std dependency. */
+function decodeBase64(str: string): Uint8Array {
+  const binary = atob(str);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
 
 // ---------------------------------------------------------------------------
 // Model
 // ---------------------------------------------------------------------------
 
 /**
- * Model definition for `@twonines/fact-store-index/exporter`. The
- * single `export` method reads the current truth-packet from
- * globalArguments, computes embeddings for every fact and constraint
- * against the configured OpenAI-compatible endpoint, and writes a
- * self-contained SQLite file with FTS5 indexes and raw f32 vector
- * BLOBs to `output_path`. Emits one `state` resource describing the
- * export.
+ * Model definition for `@twonines/fact-store-index/exporter`.
+ *
+ * `export` reads the current truth-packet from globalArguments,
+ * computes embeddings for every fact and constraint against the
+ * configured OpenAI-compatible endpoint, and writes a self-contained
+ * SQLite file with FTS5 indexes and raw f32 vector BLOBs to
+ * `output_path`. Emits a `state` resource describing the export, and
+ * an `index` resource holding the actual database bytes so any session
+ * can fetch the current index without depending on whichever machine
+ * last ran export.
+ *
+ * `search` fetches that `index` resource, opens it in memory, embeds
+ * the query, and returns hybrid FTS5 + vector results (RRF-fused) over
+ * both facts and constraints.
  */
 export const model = {
   type: "@twonines/fact-store-index/exporter",
-  version: "2026.07.07.1",
+  version: "2026.07.10.1",
   description:
     "Exporter that materializes @twonines/fact-store contents into a " +
     "SQLite file with FTS5 + vector embeddings for downstream " +
@@ -221,28 +322,118 @@ export const model = {
       lifetime: "infinite" as const,
       garbageCollection: 10,
     },
+    index: {
+      description: "The actual SQLite database bytes (base64), stored as a " +
+        "portable swamp resource rather than only written to local " +
+        "disk. Fetch this from any session to get the current index.",
+      schema: IndexSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 3,
+    },
+    search: {
+      description:
+        "Hybrid FTS5 + vector search results against the current index",
+      schema: SearchOutputSchema,
+      lifetime: "1h" as const,
+      garbageCollection: 5,
+    },
   },
   methods: {
     export: {
       description:
         "Build a fresh SQLite index from the truth_packet globalArgument " +
-        "and write it to output_path. Idempotent — rewrites the file on " +
-        "every call. Takes no method arguments; wire the truth packet " +
-        "via globalArguments in the model instance yaml.",
+        "and write it to output_path, AND store the same bytes as a " +
+        "portable `index` resource. Idempotent — rewrites both on every " +
+        "call. Takes no method arguments; wire the truth packet via " +
+        "globalArguments in the model instance yaml.",
       arguments: z.object({}),
       execute: async (
         _args: Record<string, never>,
         context: Ctx,
       ): Promise<{ dataHandles: unknown[] }> => {
         const g = context.globalArgs as GlobalArgs;
-        const state = await runExport(g.truth_packet, g, context.logger);
-        const handle = await context.writeResource("state", "snapshot", state);
+        const { state, bytes } = await runExport(
+          g.truth_packet,
+          g,
+          context.logger,
+        );
+        const stateHandle = await context.writeResource(
+          "state",
+          "snapshot",
+          state,
+        );
+        const index: Index = {
+          db: encodeBase64(bytes),
+          exported_at: state.exported_at,
+          embed_model: state.embed_model,
+          embed_dim: state.embed_dim,
+          fact_count: state.fact_count,
+          constraint_count: state.constraint_count,
+          sha256: state.sha256,
+        };
+        const indexHandle = await context.writeResource(
+          "index",
+          "current",
+          index,
+        );
         context.logger.info(
           "fact-store-index export complete: {facts} facts, {constraints} constraints, {bytes} bytes",
           {
             facts: state.fact_count,
             constraints: state.constraint_count,
             bytes: state.output_bytes,
+          },
+        );
+        return { dataHandles: [stateHandle, indexHandle] };
+      },
+    },
+
+    search: {
+      description:
+        "Hybrid FTS5 + vector search over the current index — real " +
+        "semantic + keyword relevance, not substring matching. Fetches " +
+        "the most recent `index` resource (written by `export`), opens " +
+        "it in memory, embeds the query, and returns the top facts and " +
+        "constraints ranked by RRF fusion. Portable: works the same " +
+        "regardless of which session/machine last ran export, unlike " +
+        "reading ~/.jitter/facts.db directly.",
+      arguments: z.object({
+        query: z.string().describe(
+          "Search query — natural language or keywords",
+        ),
+        limit: z.number().int().positive().default(10).describe(
+          "Max results per category (facts, constraints).",
+        ),
+      }),
+      execute: async (
+        args: { query: string; limit?: number },
+        context: Ctx,
+      ): Promise<{ dataHandles: unknown[] }> => {
+        const g = context.globalArgs as GlobalArgs;
+        const indexResource = await context.readResource("current");
+        if (!indexResource || !indexResource.db) {
+          throw new Error(
+            "No index found. Run the export method first.",
+          );
+        }
+        const bytes = decodeBase64(indexResource.db as string);
+        const result = await runSearch(
+          bytes,
+          args.query,
+          g,
+          context.logger,
+          args.limit,
+        );
+        const handle = await context.writeResource(
+          "search",
+          `search--${Date.now()}`,
+          result,
+        );
+        context.logger.info(
+          "fact-store-index search complete: {facts} facts, {constraints} constraints",
+          {
+            facts: result.facts.length,
+            constraints: result.constraints.length,
           },
         );
         return { dataHandles: [handle] };
