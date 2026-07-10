@@ -17,6 +17,17 @@ Do not review proposals you authored. If you also serve as ferret in some
 contexts, leave your own proposals for someone else. The whole point of
 this role is independence.
 
+## How this gets consumed
+
+Every activated fact competes for a slot in a capped, hint-matched truth
+packet — consuming agents (via `consult-facts`/`jitter`) call `query`
+with a scope and a handful of hints and get back at most `limit` (default
+50) facts. Correctness alone doesn't earn a fact that slot: a true,
+well-evidenced, but generic fact can still crowd out a sharper one for
+the same scope. That's what criterion 5 below is for — it's a different
+failure mode than the first four, which are all about whether the claim
+is true and honestly sourced.
+
 ## Inputs
 
 ```bash
@@ -48,7 +59,7 @@ which is sufficient for verification.
 
 ## Review criteria
 
-For every proposal, check four things:
+For every proposal, check five things:
 
 ### 1. Authority basis honesty
 
@@ -117,6 +128,27 @@ Does this fact add value beyond the scan metadata?
 Also check existing active facts: if this duplicates one already in the
 store, reject with a reference to the existing fact.
 
+### 5. Consumption fit
+
+Would this fact win a slot in a capped, hint-matched truth packet, or is
+it generic enough to be crowded out without anyone noticing it's gone?
+
+- This is a different question from specificity. Specificity asks "is
+  the claim vague." Consumption fit asks "if this surfaced mid-task,
+  would it change what the agent does" — a claim can be specific and
+  well-evidenced and still fail this if it's the kind of thing an agent
+  would trivially rediscover anyway (e.g. restating the README's opening
+  sentence in fact form).
+- Weigh this especially for `kind`s in the "what does this do /
+  architecture summary" category — that's the easiest angle for ferret
+  to satisfy and the one most likely to be redundant with what a
+  consuming agent would read directly.
+- If a repo's *entire* set of active facts turns out to be one category
+  (e.g. all deployment, nothing on ownership/dependencies/security),
+  that's a ferret-side coverage gap, not a reason to reject this specific
+  proposal — but call it out in your end-of-pass pattern report so it
+  gets fed back.
+
 ## Adversarial questions
 
 Apply the questions that match the proposal's claimed tier. The full
@@ -180,6 +212,8 @@ Activate only when:
 - Authority basis is honest
 - The fact is specific and operationally useful
 - It doesn't duplicate an existing active fact
+- It would plausibly win a slot in a capped truth packet for its scope,
+  not just be true (criterion 5)
 
 ### Reject
 
@@ -236,12 +270,17 @@ capabilities early.
 2. For each one:
    a. Read the claim and the evidence list
    b. Verify the cited evidence independently (search the index or fetch files)
-   c. Apply the four review criteria
+   c. Apply the five review criteria
    d. Activate or reject
 3. Continue until the proposed queue is empty
 4. If rejecting many proposals from the same ferret, look for a pattern —
    the ferret may be reading a class of evidence wrong, and that pattern
    is worth recording (perhaps as a constraint via `add_constraint`)
+5. Separately, check for a *coverage* pattern across the repos you just
+   reviewed: if a repo's now-active facts are all one category, that's
+   not a rejectable defect in any single proposal, but it is worth
+   surfacing — note it in your end-of-pass report so it feeds back into
+   ferret's next targeting decision
 
 ## After activating facts
 

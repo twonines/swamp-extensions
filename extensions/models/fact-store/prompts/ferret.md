@@ -22,26 +22,44 @@ swamp model method run facts list_proposals --input status=proposed --json
 swamp model method run facts list_proposals --input status=rejected --json
 ```
 
+## Consumption model
+
+Facts get injected into a capped, hint-matched truth packet — they
+don't get browsed. A repo that only answers "what does this do" is
+invisible to a conversation about who owns it or where its secrets live.
+See "How this gets consumed" and the priority list in the skill doc
+before you start — cross-repo connections, deployment targets, ownership,
+and secrets location rank above architecture summaries.
+
 ## Scope
 
 Discover and search repos via `repo-indexer`. For each repo:
 
 1. Check its index status (`swamp model method run repo-indexer status --input repo=<group/repo> --json`)
-2. Search for high-signal content with hypothesis-driven queries:
+2. Run `coverage_gaps` scoped to this repo and use `single_dimension`'s
+   `detail` as a checklist of angles you haven't tried yet
+3. Search for high-signal content with hypothesis-driven queries:
    ```bash
    swamp model method run repo-indexer search \
      --input repo=<group/repo> \
      --input 'query=<your hypothesis or question>' \
      --input limit=10 --json
    ```
-3. Follow reference chains: if a search result mentions an account ID, cluster
+4. Follow reference chains: if a search result mentions an account ID, cluster
    name, or another repo, search for those identifiers to verify before proposing
-4. Propose operational facts that would save an engineer real exploration time
+5. Propose operational facts that would save an engineer real exploration time
 
-Run multiple searches per repo with different angles — CI/CD, infrastructure,
-architecture, integrations, ownership, data stores, deployment targets.
+Run multiple searches per repo with different angles — cross-repo
+dependencies and deployment targets first, ownership and secrets next,
+architecture/CI last. Don't move to the next repo until you've at least
+tried the higher-priority angles, even if an easy architecture fact
+already landed.
 
 ## Propose
+
+Set `proposedBy` to a stable identity for whichever tool is running this
+pass — e.g. `kiro-ferret` in Kiro, `claude-ferret` in Claude Code. Not a
+placeholder, and not literally `kiro-ferret` if that's not what's running.
 
 ```bash
 swamp model method run facts propose \
@@ -50,7 +68,7 @@ swamp model method run facts propose \
   --input 'subjectRef={"refType":"repository","identityKind":"gitlab_path","identityValue":"group/repo"}' \
   --input 'value=<json-object-or-string>' \
   --input authorityBasis=<tier> \
-  --input proposedBy=kiro-ferret \
+  --input proposedBy=<tool>-ferret \
   --input 'evidence=["cited/file","another/file"]' --json
 ```
 
@@ -73,8 +91,11 @@ swamp model method run facts propose \
 
 ## Done
 
-Stop when you've covered the targeted repos. Prefer a few well-evidenced
-facts over many weak ones. Do not pad.
+Stop when you've attempted the priority angles for every targeted repo —
+not when you have one satisfying fact. Attempted-and-found-nothing is
+done; never-asked is not. Prefer a few well-evidenced facts over many
+weak ones — that's about not padding with redundant claims, not license
+to stop at the first easy angle.
 
 At the end of your pass, include a brief report listing:
 - **Tooling gaps** — things you needed but couldn't do through swamp

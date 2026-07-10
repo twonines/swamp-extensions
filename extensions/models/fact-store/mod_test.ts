@@ -793,6 +793,69 @@ Deno.test("query - includes constraints and filters by hints", async () => {
   assertEquals((packet.constraints as any[])[0].kind, "security_boundary");
 });
 
+Deno.test("query - hints surface facts outside the requested scope", async () => {
+  const { context, store } = createFactStoreTestContext();
+
+  await proposeOne(context, {
+    kind: "repository_manages_aws_backup_service",
+    scope: "myorg/backups",
+    subjectRef: {
+      refType: "repository",
+      identityKind: "gitlab_path",
+      identityValue: "myorg/backups",
+    },
+  });
+  const proposalId = [...store.values()]
+    .find((r) => r.specName === "proposal")!.data.id as string;
+  await model.methods.activate.execute(
+    { proposalId, reviewedBy: "mole" },
+    context,
+  );
+
+  // Scoped to an unrelated repo, but hinting on "backup" — should still
+  // surface the fact because its kind overlaps the hint. This is the
+  // fix for hints previously being silently ignored for facts.
+  const result = await model.methods.query.execute(
+    { scope: "myorg/totally-unrelated", hints: ["backup"], limit: 50 },
+    context,
+  );
+  const packet = store.get(result.dataHandles[0].name)!.data;
+  assertEquals((packet.facts as any[]).length, 1);
+  assertEquals(
+    (packet.facts as any[])[0].kind,
+    "repository_manages_aws_backup_service",
+  );
+});
+
+Deno.test("query - without hints, an unrelated scope returns nothing", async () => {
+  const { context, store } = createFactStoreTestContext();
+
+  await proposeOne(context, {
+    kind: "repository_manages_aws_backup_service",
+    scope: "myorg/backups",
+    subjectRef: {
+      refType: "repository",
+      identityKind: "gitlab_path",
+      identityValue: "myorg/backups",
+    },
+  });
+  const proposalId = [...store.values()]
+    .find((r) => r.specName === "proposal")!.data.id as string;
+  await model.methods.activate.execute(
+    { proposalId, reviewedBy: "mole" },
+    context,
+  );
+
+  // Same scope mismatch as above, but no hints — must NOT widen. Guards
+  // against the hints fix accidentally loosening the plain scope filter.
+  const result = await model.methods.query.execute(
+    { scope: "myorg/totally-unrelated", limit: 50 },
+    context,
+  );
+  const packet = store.get(result.dataHandles[0].name)!.data;
+  assertEquals((packet.facts as any[]).length, 0);
+});
+
 Deno.test("query - without scope returns all active facts", async () => {
   const { context, store } = createFactStoreTestContext();
 
@@ -865,6 +928,62 @@ Deno.test("add_constraint - defaults scope to global", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tests: retire_constraint
+// ---------------------------------------------------------------------------
+
+Deno.test("retire_constraint - marks an active constraint as retired", async () => {
+  const { context, store } = createFactStoreTestContext();
+
+  await model.methods.add_constraint.execute(
+    { kind: "process", scope: "global", rule: "Always review before merge" },
+    context,
+  );
+  const constraintId = [...store.values()]
+    .find((r) => r.specName === "constraint")!.data.id as string;
+
+  const result = await model.methods.retire_constraint.execute(
+    { constraintId },
+    context,
+  );
+  assertEquals(result.dataHandles.length, 1);
+
+  const constraints = [...store.values()].filter((r) => r.specName === "constraint");
+  assertEquals(constraints[0].data.status, "retired");
+  assertEquals(constraints[0].tags.status, "retired");
+  // Retiring must not lose the original rule/kind/scope.
+  assertEquals(constraints[0].data.rule, "Always review before merge");
+});
+
+Deno.test("retire_constraint - throws on non-existent constraint", async () => {
+  const { context } = createFactStoreTestContext();
+
+  await assertRejects(
+    () => model.methods.retire_constraint.execute({ constraintId: "nope" }, context),
+    Error,
+    "not found",
+  );
+});
+
+Deno.test("retire_constraint - throws on already-retired constraint", async () => {
+  const { context, store } = createFactStoreTestContext();
+
+  await model.methods.add_constraint.execute(
+    { kind: "process", scope: "global", rule: "Always review before merge" },
+    context,
+  );
+  const constraintId = [...store.values()]
+    .find((r) => r.specName === "constraint")!.data.id as string;
+
+  await model.methods.retire_constraint.execute({ constraintId }, context);
+
+  await assertRejects(
+    () => model.methods.retire_constraint.execute({ constraintId }, context),
+    Error,
+    "already retired",
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Tests: coverage_gaps
 // ---------------------------------------------------------------------------
 
@@ -903,7 +1022,6 @@ Deno.test("coverage_gaps - detects unindexed repos", async () => {
   const gaps = output.gaps as any[];
   assertEquals(gaps.length, 1);
   assertEquals(gaps[0].gapType, "no_index");
-  assertEquals(gaps[0].suggestedQueries, []);
 });
 
 Deno.test("coverage_gaps - detects single-dimension coverage", async () => {

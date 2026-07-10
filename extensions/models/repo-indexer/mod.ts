@@ -186,6 +186,12 @@ const ListIndexedOutputSchema = z.object({
   queriedAt: z.string(),
 });
 
+const ListSearchesOutputSchema = z.object({
+  searches: z.array(SearchOutputSchema),
+  total: z.number(),
+  queriedAt: z.string(),
+});
+
 // ---------------------------------------------------------------------------
 // SQLite Schema
 // ---------------------------------------------------------------------------
@@ -734,12 +740,20 @@ async function createDb(
   return db;
 }
 
-/** Open a database from bytes (for search/status). */
+/**
+ * Open a database from bytes (for search/status/reindex). `foreign_keys`
+ * is a per-connection setting, not something persisted in the serialized
+ * bytes -- without re-enabling it here, `embeddings.chunk_id ON DELETE
+ * CASCADE` silently doesn't fire, which reindex depends on when it
+ * deletes chunks for changed files.
+ */
 async function openDb(
   bytes: Uint8Array,
   logger?: { info: (m: string, f?: Record<string, unknown>) => void },
 ): Promise<WasmDb> {
-  return await WasmDb.fromBytes(bytes, logger);
+  const db = await WasmDb.fromBytes(bytes, logger);
+  db.exec("PRAGMA foreign_keys = ON");
+  return db;
 }
 
 /** Insert chunks and their embeddings into the database. */
@@ -775,6 +789,15 @@ function insertChunks(
 function deleteChunksForPaths(db: WasmDb, paths: string[]): void {
   db.transaction(() => {
     for (const p of paths) {
+      // Explicit, not reliant on ON DELETE CASCADE -- that only fires
+      // when foreign_keys is enabled on the connection, which is a
+      // per-connection setting easy to lose across a serialize/open
+      // round trip. Deleting embeddings directly means this is correct
+      // regardless of that pragma's state.
+      db.exec(
+        `DELETE FROM embeddings WHERE chunk_id IN (SELECT id FROM chunks WHERE path = ?)`,
+        [p],
+      );
       db.exec(`DELETE FROM chunks WHERE path = ?`, [p]);
       db.exec(`DELETE FROM file_hashes WHERE path = ?`, [p]);
     }
@@ -928,7 +951,7 @@ function hybridSearch(
  */
 export const model = {
   type: "@twonines/repo-indexer",
-  version: "2026.07.08.1",
+  version: "2026.07.10.1",
   description:
     "Clones a GitLab repository, chunks all text files, embeds them, and writes " +
     "a SQLite database supporting hybrid search (FTS5 + vector cosine + RRF). " +
@@ -962,6 +985,12 @@ export const model = {
     "list-indexed": {
       description: "List of all repos with an existing index",
       schema: ListIndexedOutputSchema,
+      lifetime: "1h" as const,
+      garbageCollection: 3,
+    },
+    "list-searches": {
+      description: "Recent search results, optionally filtered by repo",
+      schema: ListSearchesOutputSchema,
       lifetime: "1h" as const,
       garbageCollection: 3,
     },
@@ -1186,6 +1215,68 @@ export const model = {
         } finally {
           db.close();
         }
+      },
+    },
+
+    "list-searches": {
+      description:
+        "List recent search results for a repo, or across all repos if " +
+        "omitted, without re-running the query. Search results live for " +
+        "~1h — use this to check what's already been asked for a repo " +
+        "in this session before spending another embedding call re-asking it.",
+      arguments: z.object({
+        repo: z.string().optional().describe(
+          "Filter to a single repo path. Omit to list recent searches across all repos.",
+        ),
+      }),
+      execute: async (
+        args: { repo?: string },
+        context: Ctx,
+      ) => {
+        const allData = await context.dataRepository.findAllForModel(
+          context.modelType,
+          context.modelId,
+        );
+        const searchItems = allData.filter(
+          (d: { tags: Record<string, string> }) => d.tags.specName === "search",
+        );
+
+        const searches: z.infer<typeof SearchOutputSchema>[] = [];
+        for (const item of searchItems) {
+          const content = await context.dataRepository.getContent(
+            context.modelType,
+            context.modelId,
+            item.name,
+          );
+          if (content) {
+            try {
+              const data = JSON.parse(new TextDecoder().decode(content));
+              if (!args.repo || data.repo === args.repo) {
+                searches.push(data);
+              }
+            } catch { /* skip unparseable */ }
+          }
+        }
+
+        searches.sort((a, b) => b.searchedAt.localeCompare(a.searchedAt));
+
+        const output: z.infer<typeof ListSearchesOutputSchema> = {
+          searches,
+          total: searches.length,
+          queriedAt: new Date().toISOString(),
+        };
+
+        context.logger.info("Found {count} recent searches", {
+          count: searches.length,
+        });
+
+        const handle = await context.writeResource(
+          "list-searches",
+          args.repo ? args.repo.replaceAll("/", "--") : "all",
+          output,
+        );
+
+        return { dataHandles: [handle] };
       },
     },
 

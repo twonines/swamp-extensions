@@ -9,7 +9,6 @@
  */
 // deno-lint-ignore-file no-import-prefix
 import { z } from "npm:zod@4";
-import sqlite3InitModule from "npm:@sqlite.org/sqlite-wasm@3.53.0-build1";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -126,9 +125,12 @@ const CoverageGapSchema = z.object({
   gapType: z.string().describe(
     "Type of gap: no_facts, single_dimension, dangling_reference, no_index",
   ),
-  detail: z.string().describe("Human-readable explanation of the gap"),
-  suggestedQueries: z.array(z.string()).describe(
-    "Hypothesis-driven search queries to fill this gap",
+  detail: z.string().describe(
+    "Human-readable, data-derived explanation of the gap — what's " +
+      "actually known (or not) about this repo right now. Deliberately " +
+      "does not suggest search queries: query formulation has to stay " +
+      "live reasoning informed by this repo's actual content, not a " +
+      "fixed template applied regardless of what's there.",
   ),
 });
 
@@ -186,27 +188,11 @@ type Ctx = any;
  */
 export const model = {
   type: "@twonines/fact-store",
-  version: "2026.07.09.2",
+  version: "2026.07.10.1",
   description:
     "Stores, validates, and serves organizational facts for AI agent consumption. " +
     "Supports a propose→review→activate lifecycle with adversarial validation (ferret/mole pattern).",
-  globalArguments: z.object({
-    embedUrl: z.string().url().optional().describe(
-      "OpenAI-compatible embeddings endpoint (required for export method).",
-    ),
-    embedToken: z.string().meta({ sensitive: true }).optional().describe(
-      "Bearer token for the embeddings API (required for export method).",
-    ),
-    embedModel: z.string().optional().describe(
-      "Embedding model ID (default: text-embedding-3-small).",
-    ),
-    embedDim: z.number().optional().describe(
-      "Vector dimension (default: 1536).",
-    ),
-    outputPath: z.string().optional().describe(
-      "Path for the exported SQLite db (default: ~/.jitter/facts.db).",
-    ),
-  }),
+  globalArguments: z.object({}),
   resources: {
     fact: {
       description: "An accepted, active truth claim about an entity",
@@ -249,21 +235,6 @@ export const model = {
       schema: CoverageGapsOutputSchema,
       lifetime: "1h" as const,
       garbageCollection: 3,
-    },
-    "export-state": {
-      description: "Result of the last fact export to SQLite",
-      schema: z.object({
-        exportedAt: z.string(),
-        outputPath: z.string(),
-        embedModel: z.string(),
-        embedDim: z.number(),
-        factCount: z.number(),
-        constraintCount: z.number(),
-        outputBytes: z.number(),
-        sha256: z.string(),
-      }),
-      lifetime: "infinite" as const,
-      garbageCollection: 5,
     },
   },
   methods: {
@@ -560,19 +531,34 @@ export const model = {
         );
 
         // Filter facts: specName=fact, status=active, scope/identity match
+        // — OR, if hints are given, kind overlaps a hint regardless of
+        // scope. That second branch is what lets a fact living in a
+        // *different* repo's scope surface for a caller scoped to this
+        // one, when it's actually relevant — the cross-repo connective
+        // tissue this method exists to provide. Without it, hints were
+        // accepted as an argument but silently had no effect on facts
+        // (only ever applied to constraints), contradicting this
+        // method's own documented behavior.
+        const hintsLower = (args.hints ?? []).map((h: string) =>
+          h.toLowerCase()
+        );
+        const kindMatchesHint = (kind: string | undefined): boolean => {
+          if (!kind || hintsLower.length === 0) return false;
+          const k = kind.toLowerCase();
+          return hintsLower.some((h) => k.includes(h) || h.includes(k));
+        };
+
         const matchedFacts = allData
           .filter((d: { tags: Record<string, string> }) => {
             const t = d.tags;
             if (t.specName !== "fact" || t.status !== "active") return false;
-            if (args.scope) {
-              if (t.identityValue !== args.scope && t.scope !== args.scope) {
-                return false;
-              }
-            }
             if (args.kinds && args.kinds.length > 0) {
               if (!args.kinds.includes(t.kind)) return false;
             }
-            return true;
+            const scopeMatch = !args.scope ||
+              t.identityValue === args.scope || t.scope === args.scope;
+            if (scopeMatch) return true;
+            return kindMatchesHint(t.kind);
           });
         const totalFactsMatched = matchedFacts.length;
         const facts = matchedFacts.slice(0, args.limit);
@@ -861,12 +847,63 @@ export const model = {
       },
     },
 
+    retire_constraint: {
+      description:
+        "Retire a constraint that no longer applies. Constraints are " +
+        "human-curated, not evidence-derived, so retiring one is a human " +
+        "decision too — there's no ferret/mole equivalent for this.",
+      arguments: z.object({
+        constraintId: z.string().describe("ID of the constraint to retire"),
+      }),
+      execute: async (
+        args: { constraintId: string },
+        context: Ctx,
+      ) => {
+        const constraint = await context.readResource(
+          constraintInstanceName(args.constraintId),
+        );
+        if (!constraint) {
+          throw new Error(`Constraint ${args.constraintId} not found`);
+        }
+        if (constraint.status !== "active") {
+          throw new Error(
+            `Constraint ${args.constraintId} is already ${constraint.status}`,
+          );
+        }
+
+        const updated = {
+          ...constraint,
+          status: "retired",
+        };
+
+        const handle = await context.writeResource(
+          "constraint",
+          constraintInstanceName(args.constraintId),
+          updated,
+          {
+            tags: {
+              status: "retired",
+              kind: constraint.kind as string,
+              scope: constraint.scope as string,
+            },
+          },
+        );
+
+        context.logger.info("Constraint retired", {
+          id: args.constraintId,
+        });
+        return { dataHandles: [handle] };
+      },
+    },
+
     coverage_gaps: {
       description:
         "Analyze the fact store for knowledge gaps — repos with no facts, " +
         "single-dimension coverage, dangling references, and unindexed repos. " +
-        "Returns suggested search queries for each gap. Used by ferret to " +
-        "prioritize discovery work.",
+        "Classifies what's missing based on real fact data; does not " +
+        "suggest search queries — formulating what to search for is left " +
+        "to the discovering agent, informed by the repo's actual content. " +
+        "Used by ferret to prioritize which repos to focus on.",
       arguments: z.object({
         discoveredRepos: z.array(z.string()).optional().describe(
           "List of known repo paths. If omitted, analyzes only repos already in the fact store.",
@@ -941,13 +978,6 @@ export const model = {
               detail: isIndexed
                 ? `Repo is indexed but has zero facts. Discovery hasn't run against it yet.`
                 : `Repo is discovered but not yet indexed. Index it first, then run discovery.`,
-              suggestedQueries: isIndexed
-                ? [
-                  "what does this software do and who uses it",
-                  "how does this deploy and to what environment",
-                  "what external services or APIs does this integrate with",
-                ]
-                : [],
             });
           }
         }
@@ -969,12 +999,6 @@ export const model = {
               gapType: "single_dimension",
               detail:
                 `All ${repoFacts.length} fact(s) are infrastructure/deployment. No domain, ownership, or architecture facts.`,
-              suggestedQueries: [
-                "what is the business purpose of this application",
-                "what data model or database does this use",
-                "who owns this and what team maintains it",
-                "what architectural decisions or patterns does this follow",
-              ],
             });
           }
         }
@@ -1006,11 +1030,6 @@ export const model = {
                     gapType: "dangling_reference",
                     detail:
                       `Referenced by fact in ${f.scope} (kind: ${f.kind}) but has no facts of its own.`,
-                    suggestedQueries: [
-                      "what tools or artifacts does this repository produce",
-                      "what is the purpose of this project",
-                      "what other repos consume output from this",
-                    ],
                   });
                 }
               }
@@ -1059,532 +1078,5 @@ export const model = {
         return { dataHandles: [handle] };
       },
     },
-
-    export: {
-      description:
-        "Export all active facts and constraints to a local SQLite database " +
-        "with FTS5 full-text indexes and vector embeddings for hybrid search. " +
-        "Writes to outputPath (default ~/.jitter/facts.db). Run after " +
-        "activating new facts to refresh the jitter consumer db.",
-      arguments: z.object({}),
-      execute: async (
-        _args: Record<string, never>,
-        context: Ctx,
-      ) => {
-        const g = context.globalArgs as {
-          embedUrl?: string;
-          embedToken?: string;
-          embedModel?: string;
-          embedDim?: number;
-          outputPath?: string;
-        };
-        if (!g.embedUrl || !g.embedToken) {
-          throw new Error(
-            "Export requires embedUrl and embedToken in globalArguments.",
-          );
-        }
-        const embedModel = g.embedModel ?? "text-embedding-3-small";
-        const embedDim = g.embedDim ?? 1536;
-        const outputPath = expandPath(g.outputPath ?? "~/.jitter/facts.db");
-
-        context.logger.info("Exporting facts to {path}", { path: outputPath });
-
-        // Load all active facts
-        const allData = await context.dataRepository.findAllForModel(
-          context.modelType,
-          context.modelId,
-        );
-        const factRecords = allData.filter(
-          (d: { tags: Record<string, string> }) =>
-            d.tags.specName === "fact" && d.tags.status === "active",
-        );
-        const constraintRecords = allData.filter(
-          (d: { tags: Record<string, string> }) =>
-            d.tags.specName === "constraint" && d.tags.status === "active",
-        );
-
-        const facts: ExportFact[] = [];
-        for (const d of factRecords) {
-          const content = await context.dataRepository.getContent(
-            context.modelType,
-            context.modelId,
-            d.name,
-          );
-          if (content) {
-            try {
-              facts.push(JSON.parse(new TextDecoder().decode(content)));
-            } catch { /* skip */ }
-          }
-        }
-
-        const constraints: ExportConstraint[] = [];
-        for (const d of constraintRecords) {
-          const content = await context.dataRepository.getContent(
-            context.modelType,
-            context.modelId,
-            d.name,
-          );
-          if (content) {
-            try {
-              constraints.push(JSON.parse(new TextDecoder().decode(content)));
-            } catch { /* skip */ }
-          }
-        }
-
-        context.logger.info(
-          "Loaded {facts} facts, {constraints} constraints",
-          { facts: facts.length, constraints: constraints.length },
-        );
-
-        // Flatten to searchable text
-        const factTexts = facts.map(flattenFactForExport);
-        const constraintTexts = constraints.map(flattenConstraintForExport);
-        const allTexts = [...factTexts, ...constraintTexts];
-
-        // Embed
-        let allEmbeddings: Float32Array[] = [];
-        if (allTexts.length > 0) {
-          allEmbeddings = await embedForExport(
-            allTexts,
-            g.embedUrl!,
-            g.embedToken!,
-            embedModel,
-            embedDim,
-            context.logger,
-          );
-        }
-        const factEmbeddings = allEmbeddings.slice(0, factTexts.length);
-        const constraintEmbeddings = allEmbeddings.slice(factTexts.length);
-
-        // Build SQLite
-        const dbBytes = await buildExportSqlite(
-          facts,
-          factTexts,
-          factEmbeddings,
-          constraints,
-          constraintTexts,
-          constraintEmbeddings,
-          embedModel,
-          embedDim,
-          context.logger,
-        );
-
-        // Write to disk
-        const dir = outputPath.slice(0, outputPath.lastIndexOf("/"));
-        if (dir) {
-          try {
-            Deno.mkdirSync(dir, { recursive: true });
-          } catch { /* exists */ }
-        }
-        Deno.writeFileSync(outputPath, dbBytes);
-
-        const sha = await sha256Export(dbBytes);
-
-        const result = {
-          exportedAt: now(),
-          outputPath,
-          embedModel,
-          embedDim,
-          factCount: facts.length,
-          constraintCount: constraints.length,
-          outputBytes: dbBytes.byteLength,
-          sha256: sha,
-        };
-
-        const handle = await context.writeResource(
-          "export-state",
-          "snapshot",
-          result,
-        );
-
-        context.logger.info(
-          "Export complete: {facts} facts, {constraints} constraints, {bytes} bytes",
-          {
-            facts: facts.length,
-            constraints: constraints.length,
-            bytes: dbBytes.byteLength,
-          },
-        );
-        return { dataHandles: [handle] };
-      },
-    },
   },
 };
-
-// ---------------------------------------------------------------------------
-// Export helpers
-// ---------------------------------------------------------------------------
-
-interface ExportFact {
-  id: string;
-  kind: string;
-  scope: string;
-  subjectRef: { refType: string; identityKind: string; identityValue: string };
-  value: unknown;
-  authorityBasis: string;
-  proposedBy?: string;
-  activatedBy?: string;
-  createdAt?: string;
-  activatedAt?: string;
-  evidence?: string[];
-}
-
-interface ExportConstraint {
-  id: string;
-  kind: string;
-  scope: string;
-  rule: string;
-  rationale?: string;
-  appliesTo?: string[];
-  createdAt?: string;
-}
-
-function flattenFactForExport(f: ExportFact): string {
-  const parts: string[] = [];
-  parts.push(`kind: ${f.kind}`);
-  parts.push(
-    `subject: ${f.subjectRef.refType} ${f.subjectRef.identityKind}=${f.subjectRef.identityValue}`,
-  );
-  parts.push(`scope: ${f.scope}`);
-  const valStr = typeof f.value === "string"
-    ? f.value
-    : JSON.stringify(f.value ?? null);
-  parts.push(`value: ${valStr}`);
-  parts.push(`basis: ${f.authorityBasis}`);
-  if (f.proposedBy) parts.push(`proposedBy: ${f.proposedBy}`);
-  if (f.evidence && f.evidence.length > 0) {
-    parts.push(`evidence: ${f.evidence.join(", ")}`);
-  }
-  return parts.join(" | ");
-}
-
-function flattenConstraintForExport(c: ExportConstraint): string {
-  const parts: string[] = [];
-  parts.push(`kind: ${c.kind}`);
-  parts.push(`scope: ${c.scope}`);
-  parts.push(`rule: ${c.rule}`);
-  if (c.rationale) parts.push(`rationale: ${c.rationale}`);
-  if (c.appliesTo && c.appliesTo.length > 0) {
-    parts.push(`appliesTo: ${c.appliesTo.join(", ")}`);
-  }
-  return parts.join(" | ");
-}
-
-function tierForBasis(basis: string): number {
-  switch (basis) {
-    case "live_system_verification":
-      return 0;
-    case "file_is_the_mechanism":
-      return 1;
-    case "file_content_observation":
-      return 2;
-    case "human_claim_in_file":
-    case "human_claim_in_ticket":
-      return 3;
-    case "agent_inference":
-      return 4;
-    default:
-      return 4;
-  }
-}
-
-function expandPath(p: string): string {
-  if (p.startsWith("~/")) {
-    const home = Deno.env.get("HOME");
-    if (home) return `${home}/${p.slice(2)}`;
-  }
-  return p;
-}
-
-async function sha256Export(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    bytes as unknown as Uint8Array<ArrayBuffer>,
-  );
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function floatToBlob(vec: Float32Array): Uint8Array {
-  return new Uint8Array(vec.buffer, vec.byteOffset, vec.byteLength).slice();
-}
-
-// ---------------------------------------------------------------------------
-// Export: embedding
-// ---------------------------------------------------------------------------
-
-const EXPORT_BATCH_SIZE = 32;
-
-async function embedForExport(
-  texts: string[],
-  url: string,
-  token: string,
-  model: string,
-  dim: number,
-  logger: { info: (m: string, f?: Record<string, unknown>) => void },
-): Promise<Float32Array[]> {
-  const out: Float32Array[] = new Array(texts.length);
-  const endpoint = url.endsWith("/") ? `${url}embeddings` : `${url}/embeddings`;
-
-  for (let i = 0; i < texts.length; i += EXPORT_BATCH_SIZE) {
-    const batch = texts.slice(i, i + EXPORT_BATCH_SIZE);
-    logger.info("Embedding batch {start}-{end} of {total}", {
-      start: i,
-      end: i + batch.length,
-      total: texts.length,
-    });
-
-    const resp = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ model, input: batch }),
-    });
-
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      throw new Error(
-        `Embedding API ${resp.status}: ${body.slice(0, 300)}`,
-      );
-    }
-
-    const parsed = await resp.json() as {
-      data: Array<{ embedding: number[]; index?: number }>;
-    };
-
-    for (const d of parsed.data) {
-      const idx = (d.index ?? 0) + i;
-      if (d.embedding.length !== dim) {
-        throw new Error(
-          `Embedding dim mismatch: got ${d.embedding.length}, expected ${dim}`,
-        );
-      }
-      out[idx] = new Float32Array(d.embedding);
-    }
-  }
-  return out;
-}
-
-// ---------------------------------------------------------------------------
-// Export: SQLite construction
-// ---------------------------------------------------------------------------
-
-const EXPORT_SCHEMA_SQL = `
-CREATE TABLE facts (
-  rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-  id TEXT NOT NULL UNIQUE,
-  kind TEXT NOT NULL,
-  scope TEXT NOT NULL,
-  subject_ref_type TEXT NOT NULL,
-  subject_identity_kind TEXT NOT NULL,
-  subject_identity_value TEXT NOT NULL,
-  value_json TEXT NOT NULL,
-  authority_basis TEXT NOT NULL,
-  tier INTEGER NOT NULL,
-  proposed_by TEXT,
-  activated_by TEXT,
-  created_at TEXT,
-  activated_at TEXT,
-  evidence_json TEXT NOT NULL,
-  searchable_text TEXT NOT NULL,
-  embedding BLOB
-);
-CREATE INDEX facts_kind ON facts(kind);
-CREATE INDEX facts_subject ON facts(subject_identity_value);
-CREATE INDEX facts_tier ON facts(tier);
-CREATE VIRTUAL TABLE facts_fts USING fts5(searchable_text);
-
-CREATE TABLE constraints (
-  rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-  id TEXT NOT NULL UNIQUE,
-  kind TEXT NOT NULL,
-  scope TEXT NOT NULL,
-  rule TEXT NOT NULL,
-  rationale TEXT,
-  applies_to_json TEXT NOT NULL,
-  created_at TEXT,
-  searchable_text TEXT NOT NULL,
-  embedding BLOB
-);
-CREATE INDEX constraints_kind ON constraints(kind);
-CREATE VIRTUAL TABLE constraints_fts USING fts5(searchable_text);
-
-CREATE TABLE manifest (
-  exported_at TEXT NOT NULL,
-  embed_model TEXT NOT NULL,
-  embed_dim INTEGER NOT NULL,
-  fact_count INTEGER NOT NULL,
-  constraint_count INTEGER NOT NULL,
-  schema_version INTEGER NOT NULL
-);
-`;
-
-const SQLITE_WASM_URL =
-  "https://registry.npmjs.org/@sqlite.org/sqlite-wasm/-/sqlite-wasm-3.53.0-build1.tgz";
-
-// deno-lint-ignore no-explicit-any
-let cachedSqlite3Export: any = null;
-let cachedWasmBytesExport: Uint8Array | null = null;
-
-// deno-lint-ignore no-explicit-any
-async function loadSqlite3Export(logger: any): Promise<any> {
-  if (cachedSqlite3Export) return cachedSqlite3Export;
-  if (!cachedWasmBytesExport) {
-    logger.info("Loading sqlite3 WASM for export (first call)");
-    const resp = await fetch(SQLITE_WASM_URL);
-    if (!resp.ok) throw new Error(`WASM fetch failed: ${resp.status}`);
-    const tarGz = new Uint8Array(await resp.arrayBuffer());
-    cachedWasmBytesExport = await extractWasmFromTgz(tarGz);
-  }
-  cachedSqlite3Export =
-    await (sqlite3InitModule as (config?: unknown) => Promise<unknown>)({
-      wasmBinary: cachedWasmBytesExport,
-    });
-  return cachedSqlite3Export;
-}
-
-async function extractWasmFromTgz(tarGz: Uint8Array): Promise<Uint8Array> {
-  const ds = new DecompressionStream("gzip");
-  const writer = ds.writable.getWriter();
-  writer.write(tarGz as unknown as Uint8Array<ArrayBuffer>);
-  writer.close();
-  const chunks: Uint8Array[] = [];
-  const reader = ds.readable.getReader();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value) chunks.push(value);
-  }
-  let total = 0;
-  for (const c of chunks) total += c.byteLength;
-  const tar = new Uint8Array(total);
-  let offset = 0;
-  for (const c of chunks) {
-    tar.set(c, offset);
-    offset += c.byteLength;
-  }
-  const target = "package/dist/sqlite3.wasm";
-  const decoder = new TextDecoder("utf-8");
-  let pos = 0;
-  while (pos + 512 <= tar.byteLength) {
-    const header = tar.subarray(pos, pos + 512);
-    let nameEnd = 0;
-    while (nameEnd < 100 && header[nameEnd] !== 0) nameEnd++;
-    const name = decoder.decode(header.subarray(0, nameEnd));
-    if (!name) break;
-    const sizeStr = decoder
-      .decode(header.subarray(124, 136))
-      .replace(/[\0 ]+$/g, "")
-      .trim();
-    const size = sizeStr ? parseInt(sizeStr, 8) : 0;
-    const dataStart = pos + 512;
-    if (name === target) {
-      return tar.subarray(dataStart, dataStart + size).slice();
-    }
-    pos = dataStart + Math.ceil(size / 512) * 512;
-  }
-  throw new Error(`sqlite3.wasm not found in tarball`);
-}
-
-async function buildExportSqlite(
-  facts: ExportFact[],
-  factTexts: string[],
-  factEmbeddings: Float32Array[],
-  constraints: ExportConstraint[],
-  constraintTexts: string[],
-  constraintEmbeddings: Float32Array[],
-  embedModel: string,
-  embedDim: number,
-  // deno-lint-ignore no-explicit-any
-  logger: any,
-): Promise<Uint8Array> {
-  const sqlite3 = await loadSqlite3Export(logger);
-  const db = new sqlite3.oo1.DB(":memory:", "c");
-  try {
-    db.exec(EXPORT_SCHEMA_SQL);
-
-    for (let i = 0; i < facts.length; i++) {
-      const f = facts[i];
-      const emb = factEmbeddings[i];
-      db.exec({
-        sql: `INSERT INTO facts (
-                id, kind, scope, subject_ref_type, subject_identity_kind,
-                subject_identity_value, value_json, authority_basis, tier,
-                proposed_by, activated_by, created_at, activated_at,
-                evidence_json, searchable_text, embedding
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        bind: [
-          f.id,
-          f.kind,
-          f.scope,
-          f.subjectRef.refType,
-          f.subjectRef.identityKind,
-          f.subjectRef.identityValue,
-          JSON.stringify(f.value ?? null),
-          f.authorityBasis,
-          tierForBasis(f.authorityBasis),
-          f.proposedBy ?? null,
-          f.activatedBy ?? null,
-          f.createdAt ?? null,
-          f.activatedAt ?? null,
-          JSON.stringify(f.evidence ?? []),
-          factTexts[i],
-          emb ? floatToBlob(emb) : null,
-        ],
-      });
-      db.exec({
-        sql: `INSERT INTO facts_fts (rowid, searchable_text) VALUES (?, ?)`,
-        bind: [i + 1, factTexts[i]],
-      });
-    }
-
-    for (let i = 0; i < constraints.length; i++) {
-      const c = constraints[i];
-      const emb = constraintEmbeddings[i];
-      db.exec({
-        sql: `INSERT INTO constraints (
-                id, kind, scope, rule, rationale, applies_to_json,
-                created_at, searchable_text, embedding
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        bind: [
-          c.id,
-          c.kind,
-          c.scope,
-          c.rule,
-          c.rationale ?? null,
-          JSON.stringify(c.appliesTo ?? []),
-          c.createdAt ?? null,
-          constraintTexts[i],
-          emb ? floatToBlob(emb) : null,
-        ],
-      });
-      db.exec({
-        sql:
-          `INSERT INTO constraints_fts (rowid, searchable_text) VALUES (?, ?)`,
-        bind: [i + 1, constraintTexts[i]],
-      });
-    }
-
-    db.exec({
-      sql: `INSERT INTO manifest (
-              exported_at, embed_model, embed_dim,
-              fact_count, constraint_count, schema_version
-            ) VALUES (?, ?, ?, ?, ?, ?)`,
-      bind: [
-        new Date().toISOString(),
-        embedModel,
-        embedDim,
-        facts.length,
-        constraints.length,
-        1,
-      ],
-    });
-
-    return sqlite3.capi.sqlite3_js_db_export(db) as Uint8Array;
-  } finally {
-    db.close();
-  }
-}

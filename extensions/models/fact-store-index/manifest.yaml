@@ -1,20 +1,22 @@
 manifestVersion: 1
 name: "@twonines/fact-store-index"
-version: "2026.07.07.1"
+version: "2026.07.10.1"
 description: >
   Exports the active facts and constraints from a `@twonines/fact-store`
-  instance into a local SQLite database with full-text search and vector
-  embeddings so downstream tools can build sub-100ms just-in-time truth
-  packets for AI agents without querying the swamp datastore on every
-  prompt.
+  instance into a portable SQLite index (FTS5 full-text + raw vector
+  BLOBs), and serves hybrid search directly against it.
 
   Ships one model type — `@twonines/fact-store-index/exporter` — with an
   `export` method that takes the output of `fact-store.query` as input,
   computes embeddings against any OpenAI-compatible embeddings endpoint
-  (OpenAI, LiteLLM, vLLM, etc.), and writes a portable SQLite file
-  (FTS5 + raw vector BLOBs) to a configurable output path. Consumers
-  such as `jitter` open the SQLite directly and combine BM25 with cosine
-  similarity for hybrid retrieval.
+  (OpenAI, LiteLLM, vLLM, etc.), and writes the SQLite database both to
+  a configurable local path and as a portable `index` swamp resource.
+  A `search` method fetches that resource, opens it in memory, and
+  returns RRF-fused FTS5 + vector results — real semantic relevance,
+  reachable from any session rather than only whichever machine last
+  ran export. Local consumers such as `jitter` can still open the
+  written file directly and combine BM25 with cosine similarity
+  themselves if preferred.
 
   Prerequisites:
   - An OpenAI-compatible embeddings endpoint + bearer token. Point
@@ -38,5 +40,6 @@ labels:
   - sqlite
   - embeddings
   - hybrid-search
+  - search
   - jitter
   - agent-context
