@@ -43,7 +43,7 @@ swamp model method run facts query \
   --input 'hints=["keyword","keyword"]' \
   --input 'kinds=["repository_deploys_to_account","runner_topology"]' \
   --input limit=30 \
-  --json > /tmp/fact-store-query.json
+  --json --skip-reports > /tmp/fact-store-query.json
 ```
 
 Guidance on each input:
@@ -70,7 +70,7 @@ If you also want the whole active-fact catalog for cross-reference:
 ```bash
 swamp model method run facts list_facts \
   --input limit=500 \
-  --json > /tmp/fact-store-all.json
+  --json --skip-reports > /tmp/fact-store-all.json
 ```
 
 ### When `query`'s hints aren't enough
@@ -89,7 +89,7 @@ to hybrid search over the same corpus:
 swamp model method run fact-store-index search \
   --input query="<your actual question, in plain language>" \
   --input limit=20 \
-  --json > /tmp/fact-store-search.json
+  --json --skip-reports > /tmp/fact-store-search.json
 ```
 
 This embeds your query and runs FTS5 + vector search (RRF-fused) against
@@ -186,7 +186,7 @@ Common shapes:
 swamp model method run facts query \
   --input scope=<group/repo> \
   --input 'hints=["<failure-mode>","<component>"]' \
-  --input limit=30 --json > /tmp/query.json
+  --input limit=30 --json --skip-reports > /tmp/query.json
 ```
 
 **Onboarding to a service:**
@@ -194,7 +194,7 @@ swamp model method run facts query \
 swamp model method run facts query \
   --input scope=<service-or-repo> \
   --input 'hints=["deployment","runtime","dependencies","topology"]' \
-  --input limit=50 --json > /tmp/query.json
+  --input limit=50 --json --skip-reports > /tmp/query.json
 ```
 
 **Cross-account / cross-cluster investigation:**
@@ -202,21 +202,21 @@ swamp model method run facts query \
 swamp model method run facts query \
   --input 'hints=["<account-id-or-cluster-name>"]' \
   --input 'kinds=["repository_deploys_to_account","eks_cluster_hosts_namespace"]' \
-  --input limit=50 --json > /tmp/query.json
+  --input limit=50 --json --skip-reports > /tmp/query.json
 ```
 
 **Existing knowledge about a class of thing (e.g. all runner topologies):**
 ```bash
 swamp model method run facts list_facts \
   --input kind=<kind> \
-  --input limit=100 --json > /tmp/kind.json
+  --input limit=100 --json --skip-reports > /tmp/kind.json
 ```
 
 **Free-text question, no known kind or scope:**
 ```bash
 swamp model method run fact-store-index search \
   --input query="<plain-language question>" \
-  --input limit=20 --json > /tmp/search.json
+  --input limit=20 --json --skip-reports > /tmp/search.json
 ```
 
 ## Operating loop

@@ -79,22 +79,22 @@ branch, activity dates — these are already available from repo metadata.
 
 ```bash
 # What repos are already indexed — start here
-swamp model method run repo-indexer list-indexed --json
+swamp model method run repo-indexer list-indexed --json --skip-reports
 
 # Search the target repo's index with your hypotheses
 swamp model method run repo-indexer search \
   --input repo=<group/repo> \
   --input 'query=<your question about the repo>' \
-  --input limit=10 --json
+  --input limit=10 --json --skip-reports
 
 # What's already known — don't re-propose
-swamp model method run facts list_facts --json
+swamp model method run facts list_facts --json --skip-reports
 
 # What's currently pending — don't double-propose
-swamp model method run facts list_proposals --input status=proposed --json
+swamp model method run facts list_proposals --input status=proposed --json --skip-reports
 
 # Your prior rejections — if a claim was rejected, address the reason or skip
-swamp model method run facts list_proposals --input status=rejected --json
+swamp model method run facts list_proposals --input status=rejected --json --skip-reports
 ```
 
 ## How to search effectively
@@ -213,8 +213,12 @@ When mole rejects a proposal, read the reason. Then:
 **No external tools.** Do not shell out to `git`, `curl`, `jq`, or any
 other CLI tool. Do not pipe swamp output through `python`, `python3`,
 `jq`, `grep`, `sed`, `awk`, or any other program. Run swamp commands
-with `--json` and read the output directly — no post-processing
-pipelines. All discovery work must go through swamp models, methods,
+with `--json --skip-reports` and read the output directly — no
+post-processing pipelines. `--skip-reports` matters on its own: without
+it, `model method run`/`workflow run` tack a full copy of the model's
+static output schema onto every single response — ~15-20x the size of
+the actual data for a small result. All discovery work must go through
+swamp models, methods,
 and workflows. If you hit a wall where the swamp data model doesn't
 provide what you need (missing method, insufficient index coverage,
 data you can't reach), don't improvise — note it and include it in
@@ -266,7 +270,7 @@ are different failure modes; don't let avoiding one cause the other.
 
 ```bash
 swamp model method run facts coverage_gaps \
-  --input 'discoveredRepos=["<group/repo>"]' --json
+  --input 'discoveredRepos=["<group/repo>"]' --json --skip-reports
 ```
 
 If the repo comes back `single_dimension`, its `detail` names which
@@ -282,13 +286,13 @@ consuming agent might actually ask about it.
 Before searching a repo, verify it has an index:
 
 ```bash
-swamp model method run repo-indexer status --input repo=<group/repo> --json
+swamp model method run repo-indexer status --input repo=<group/repo> --json --skip-reports
 ```
 
 If this fails with "No index found", index it first:
 
 ```bash
-swamp model method run repo-indexer index --input projectPath=<group/repo> --json
+swamp model method run repo-indexer index --input projectPath=<group/repo> --json --skip-reports
 ```
 
 For batch indexing (multiple repos), use the workflow:
@@ -323,7 +327,7 @@ Use `coverage_gaps` to decide which repos to focus on:
 swamp model method run facts coverage_gaps \
   --input 'discoveredRepos=[...]' \
   --input 'indexedRepos=[...]' \
-  --json
+  --json --skip-reports
 ```
 
 Priority order from the output:
