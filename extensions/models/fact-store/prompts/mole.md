@@ -80,11 +80,12 @@ swamp model method run facts reject \
 If you activated one or more proposals, refresh the fact index:
 
 ```bash
-swamp workflow run refresh-fact-index
+swamp model method run facts export --json --skip-reports
 ```
 
 This exports all active facts to `~/.jitter/facts.db` (SQLite with FTS5 +
-vector embeddings). Skip this if you activated zero proposals.
+vector embeddings) and refreshes the portable index `search` reads from.
+Skip this if you activated zero proposals.
 
 ## Constraints
 
