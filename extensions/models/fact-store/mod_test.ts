@@ -1080,3 +1080,129 @@ Deno.test("coverage_gaps - respects limit", async () => {
   const output = store.get(result.dataHandles[0].name)!.data;
   assertEquals((output.gaps as any[]).length, 2);
 });
+
+// ---------------------------------------------------------------------------
+// Tests: export, search
+// ---------------------------------------------------------------------------
+
+const TEST_KEYWORDS = ["backup", "owner", "secret"];
+
+function fakeEmbedding(text: string): number[] {
+  const lower = text.toLowerCase();
+  return TEST_KEYWORDS.map((k) => (lower.includes(k) ? 1 : 0.01));
+}
+
+function stubEmbeddingsFetch() {
+  const original = globalThis.fetch;
+  globalThis.fetch = ((input: any, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (!url.includes("/embeddings")) return original(input, init);
+    const body = JSON.parse(init!.body as string) as { input: string[] };
+    const data = body.input.map((text: string, index: number) => ({
+      index,
+      embedding: fakeEmbedding(text),
+    }));
+    return Promise.resolve(
+      new Response(JSON.stringify({ data }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  }) as typeof fetch;
+  return { restore: () => { globalThis.fetch = original; } };
+}
+
+function embedGlobalArgs(outputPath: string) {
+  return {
+    embedUrl: "http://fake.test/v1",
+    embedToken: "test-token",
+    embedModel: "test-embed-model",
+    embedDim: TEST_KEYWORDS.length,
+    outputPath,
+  };
+}
+
+Deno.test("export - writes an export-state resource and a portable index resource", async () => {
+  const stub = stubEmbeddingsFetch();
+  const tmpPath = await Deno.makeTempFile({ suffix: ".db" });
+  try {
+    const { context, store } = createFactStoreTestContext({
+      globalArgs: embedGlobalArgs(tmpPath),
+    });
+
+    await proposeOne(context, {
+      kind: "repository_manages_aws_backup_service",
+      value: "backup backup backup",
+    });
+    const proposalId = [...store.values()]
+      .find((r) => r.specName === "proposal")!.data.id as string;
+    await model.methods.activate.execute({ proposalId, reviewedBy: "mole" }, context);
+
+    const result = await model.methods.export.execute({}, context);
+    assertEquals(result.dataHandles.length, 2);
+
+    const state = store.get("snapshot")!.data;
+    assertEquals(state.factCount, 1);
+    assertEquals(state.constraintCount, 0);
+
+    const index = store.get("current")!.data;
+    assertEquals(typeof index.db, "string");
+    assertEquals((index.db as string).length > 0, true);
+    assertEquals(index.factCount, 1);
+  } finally {
+    stub.restore();
+    await Deno.remove(tmpPath).catch(() => {});
+  }
+});
+
+Deno.test("export - throws when embedUrl/embedToken are not configured", async () => {
+  const { context } = createFactStoreTestContext();
+  await assertRejects(
+    () => model.methods.export.execute({}, context),
+    Error,
+    "requires embedUrl and embedToken",
+  );
+});
+
+Deno.test("search - finds the exported fact by content, via the index resource", async () => {
+  const stub = stubEmbeddingsFetch();
+  const tmpPath = await Deno.makeTempFile({ suffix: ".db" });
+  try {
+    const { context, store } = createFactStoreTestContext({
+      globalArgs: embedGlobalArgs(tmpPath),
+    });
+
+    await proposeOne(context, {
+      kind: "repository_manages_aws_backup_service",
+      value: "backup backup backup",
+    });
+    const proposalId = [...store.values()]
+      .find((r) => r.specName === "proposal")!.data.id as string;
+    await model.methods.activate.execute({ proposalId, reviewedBy: "mole" }, context);
+    await model.methods.export.execute({}, context);
+
+    const result = await model.methods.search.execute(
+      { query: "backup", limit: 5 },
+      context,
+    );
+    const output = store.get(result.dataHandles[0].name)!.data;
+    const facts = output.facts as any[];
+    assertEquals(facts.length > 0, true);
+    assertEquals(facts[0].kind, "repository_manages_aws_backup_service");
+  } finally {
+    stub.restore();
+    await Deno.remove(tmpPath).catch(() => {});
+  }
+});
+
+Deno.test("search - throws a clear error when no index has been exported yet", async () => {
+  const { context } = createFactStoreTestContext({
+    globalArgs: embedGlobalArgs("/tmp/unused.db"),
+  });
+
+  await assertRejects(
+    () => model.methods.search.execute({ query: "anything", limit: 10 }, context),
+    Error,
+    "No index found",
+  );
+});
