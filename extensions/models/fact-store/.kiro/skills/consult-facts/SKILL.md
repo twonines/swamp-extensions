@@ -86,7 +86,7 @@ because your hints didn't line up with how it was phrased — fall back
 to hybrid search over the same corpus:
 
 ```bash
-swamp model method run fact-store-index search \
+swamp model method run facts search \
   --input query="<your actual question, in plain language>" \
   --input limit=20 \
   --json --skip-reports > /tmp/fact-store-search.json
@@ -214,7 +214,7 @@ swamp model method run facts list_facts \
 
 **Free-text question, no known kind or scope:**
 ```bash
-swamp model method run fact-store-index search \
+swamp model method run facts search \
   --input query="<plain-language question>" \
   --input limit=20 --json --skip-reports > /tmp/search.json
 ```
@@ -229,7 +229,7 @@ swamp model method run fact-store-index search \
    and which are leads (2-4).
 5. If the query came back thin and you're not confident that means
    "nothing exists" rather than "my hints didn't match," fall back to
-   `fact-store-index search` before concluding there's nothing there.
+   `facts search` before concluding there's nothing there.
 6. Do the work, treating the truth packet as a shortcut, not a
    substitute for verification on irreversible actions.
 7. On drift: verify, propose the correction, note it in output.
@@ -252,5 +252,5 @@ swamp model method run fact-store-index search \
 - **Passing a scope you're not sure about.** If unsure, omit `scope`
   and rely on `hints`. Over-scoping filters out relevant facts silently.
 - **Concluding "nothing exists" from a thin `query` result** without
-  trying `fact-store-index search` first. Kind-based hints and semantic
+  trying `facts search` first. Kind-based hints and semantic
   search fail differently — a genuine gap should survive both, not just one.

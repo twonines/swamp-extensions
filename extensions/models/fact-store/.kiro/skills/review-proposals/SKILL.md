@@ -292,19 +292,22 @@ After activating one or more proposals, refresh the fact index so
 downstream consumers (agents using `consult-facts`) see the new facts:
 
 ```bash
-swamp workflow run refresh-fact-index
+swamp model method run facts export --json --skip-reports
 ```
 
-**What this does:** The workflow calls the `export` method on the `facts`
-model, which:
+**What this does:**
 
 1. Reads all active facts and constraints from the datastore
 2. Generates text embeddings for hybrid search
 3. Materializes a SQLite database (FTS5 + vector) at `~/.jitter/facts.db`
+4. Also writes the same bytes as a portable `index` resource — this is
+   what the `search` method reads from, so it stays fresh too
 
-The `consult-facts` consumer reads from this local SQLite file. If you
-don't run the export, newly activated facts won't appear in consumer
-queries until someone else triggers it.
+The `consult-facts` consumer reads from the local SQLite file directly;
+`search` reads the portable resource (useful when running behind
+`swamp serve`, where the local file only exists on the server). If you
+don't run export, newly activated facts won't appear in either path
+until someone else triggers it.
 
 **When to run:** Once at the end of a review session — not after every
 individual activation. If you activated zero proposals (all rejected),
