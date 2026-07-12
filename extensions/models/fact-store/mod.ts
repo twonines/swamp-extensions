@@ -9,6 +9,8 @@
  */
 // deno-lint-ignore-file no-import-prefix
 import { z } from "npm:zod@4";
+import { runExport, runSearch } from "./_lib/impl.ts";
+import type { ExportConstraint, ExportFact } from "./_lib/impl.ts";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -147,6 +149,61 @@ const CoverageGapsOutputSchema = z.object({
   generatedAt: z.string(),
 });
 
+const ExportStateSchema = z.object({
+  exportedAt: z.string(),
+  outputPath: z.string(),
+  embedModel: z.string(),
+  embedDim: z.number(),
+  factCount: z.number(),
+  constraintCount: z.number(),
+  outputBytes: z.number(),
+  sha256: z.string(),
+});
+
+const IndexSchema = z.object({
+  db: z.string().describe("Base64-encoded SQLite database bytes"),
+  exportedAt: z.string(),
+  embedModel: z.string(),
+  embedDim: z.number(),
+  factCount: z.number(),
+  constraintCount: z.number(),
+  sha256: z.string(),
+});
+
+const FactHitSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  scope: z.string(),
+  subjectRef: SubjectRefSchema,
+  value: z.unknown(),
+  authorityBasis: z.string(),
+  proposedBy: z.string().nullable(),
+  activatedBy: z.string().nullable(),
+  createdAt: z.string().nullable(),
+  activatedAt: z.string().nullable(),
+  evidence: z.array(z.string()),
+  score: z.number(),
+});
+
+const ConstraintHitSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  scope: z.string(),
+  rule: z.string(),
+  rationale: z.string().nullable(),
+  appliesTo: z.array(z.string()),
+  createdAt: z.string().nullable(),
+  score: z.number(),
+});
+
+const SearchResultsSchema = z.object({
+  query: z.string(),
+  facts: z.array(FactHitSchema),
+  constraints: z.array(ConstraintHitSchema),
+  totalIndexed: z.number(),
+  searchedAt: z.string(),
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -171,6 +228,25 @@ function constraintInstanceName(id: string): string {
   return `constraint--${id}`;
 }
 
+/** Encode bytes to a base64 string without pulling in a std dependency. */
+function encodeBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+/** Decode a base64 string back to bytes without pulling in a std dependency. */
+function decodeBase64(str: string): Uint8Array {
+  const binary = atob(str);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
 // deno-lint-ignore no-explicit-any
 type Ctx = any;
 
@@ -188,11 +264,27 @@ type Ctx = any;
  */
 export const model = {
   type: "@twonines/fact-store",
-  version: "2026.07.10.2",
+  version: "2026.07.12.1",
   description:
     "Stores, validates, and serves organizational facts for AI agent consumption. " +
     "Supports a propose→review→activate lifecycle with adversarial validation (ferret/mole pattern).",
-  globalArguments: z.object({}),
+  globalArguments: z.object({
+    embedUrl: z.string().url().optional().describe(
+      "OpenAI-compatible embeddings endpoint (required for export/search methods).",
+    ),
+    embedToken: z.string().meta({ sensitive: true }).optional().describe(
+      "Bearer token for the embeddings API (required for export/search methods).",
+    ),
+    embedModel: z.string().optional().describe(
+      "Embedding model ID (default: text-embedding-3-small).",
+    ),
+    embedDim: z.number().optional().describe(
+      "Vector dimension (default: 1536).",
+    ),
+    outputPath: z.string().optional().describe(
+      "Path for the exported SQLite db (default: ~/.jitter/facts.db).",
+    ),
+  }),
   resources: {
     fact: {
       description: "An accepted, active truth claim about an entity",
@@ -235,6 +327,29 @@ export const model = {
       schema: CoverageGapsOutputSchema,
       lifetime: "1h" as const,
       garbageCollection: 3,
+    },
+    "export-state": {
+      description: "Result of the last fact export to SQLite",
+      schema: ExportStateSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 5,
+    },
+    index: {
+      description:
+        "The exported SQLite database bytes (base64), stored as a portable " +
+        "swamp resource in addition to the local disk write — the only way " +
+        "a remote client (e.g. via swamp serve) retrieves the bytes, since " +
+        "outputPath writes to whichever machine ran export.",
+      schema: IndexSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 3,
+    },
+    "search-results": {
+      description:
+        "Hybrid FTS5 + vector search results against the current index",
+      schema: SearchResultsSchema,
+      lifetime: "1h" as const,
+      garbageCollection: 5,
     },
   },
   methods: {
@@ -1075,6 +1190,157 @@ export const model = {
         context.logger.info("Coverage gaps: {total} gaps found", {
           total: limited.length,
         });
+        return { dataHandles: [handle] };
+      },
+    },
+
+    export: {
+      description:
+        "Export all active facts and constraints to a local SQLite database " +
+        "with FTS5 full-text indexes and vector embeddings for hybrid search. " +
+        "Writes to outputPath (default ~/.jitter/facts.db) AND stores the " +
+        "same bytes as a portable index resource, for consumers behind " +
+        "swamp serve where outputPath only reaches the server's disk. " +
+        "Run after activating new facts to refresh the jitter consumer db.",
+      arguments: z.object({}),
+      execute: async (
+        _args: Record<string, never>,
+        context: Ctx,
+      ) => {
+        const g = context.globalArgs as {
+          embedUrl?: string;
+          embedToken?: string;
+          embedModel?: string;
+          embedDim?: number;
+          outputPath?: string;
+        };
+
+        const allData = await context.dataRepository.findAllForModel(
+          context.modelType,
+          context.modelId,
+        );
+        const factRecords = allData.filter(
+          (d: { tags: Record<string, string> }) =>
+            d.tags.specName === "fact" && d.tags.status === "active",
+        );
+        const constraintRecords = allData.filter(
+          (d: { tags: Record<string, string> }) =>
+            d.tags.specName === "constraint" && d.tags.status === "active",
+        );
+
+        const facts: ExportFact[] = [];
+        for (const d of factRecords) {
+          const content = await context.dataRepository.getContent(
+            context.modelType,
+            context.modelId,
+            d.name,
+          );
+          if (content) {
+            try {
+              facts.push(JSON.parse(new TextDecoder().decode(content)));
+            } catch { /* skip */ }
+          }
+        }
+
+        const constraints: ExportConstraint[] = [];
+        for (const d of constraintRecords) {
+          const content = await context.dataRepository.getContent(
+            context.modelType,
+            context.modelId,
+            d.name,
+          );
+          if (content) {
+            try {
+              constraints.push(JSON.parse(new TextDecoder().decode(content)));
+            } catch { /* skip */ }
+          }
+        }
+
+        const { state, bytes } = await runExport(
+          facts,
+          constraints,
+          g,
+          context.logger,
+        );
+
+        const stateHandle = await context.writeResource(
+          "export-state",
+          "snapshot",
+          state,
+        );
+
+        const index = {
+          db: encodeBase64(bytes),
+          exportedAt: state.exportedAt,
+          embedModel: state.embedModel,
+          embedDim: state.embedDim,
+          factCount: state.factCount,
+          constraintCount: state.constraintCount,
+          sha256: state.sha256,
+        };
+        const indexHandle = await context.writeResource(
+          "index",
+          "current",
+          index,
+        );
+
+        return { dataHandles: [stateHandle, indexHandle] };
+      },
+    },
+
+    search: {
+      description:
+        "Hybrid FTS5 + vector search over the current exported index — " +
+        "real semantic + keyword relevance, not substring matching. " +
+        "Fetches the index resource written by the last export, embeds " +
+        "only the query, and returns the top facts/constraints ranked by " +
+        "RRF fusion. Useful for mole to find near-duplicate proposals " +
+        "that don't share exact keywords. Requires export to have been " +
+        "run at least once.",
+      arguments: z.object({
+        query: z.string().describe(
+          "Search query — natural language or keywords",
+        ),
+        limit: z.number().int().positive().default(10).describe(
+          "Max results per category (facts, constraints).",
+        ),
+      }),
+      execute: async (
+        args: { query: string; limit: number },
+        context: Ctx,
+      ) => {
+        const g = context.globalArgs as {
+          embedUrl?: string;
+          embedToken?: string;
+          embedModel?: string;
+          embedDim?: number;
+        };
+        const indexResource = await context.readResource("current");
+        if (!indexResource || !indexResource.db) {
+          throw new Error(
+            "No index found. Run the export method first.",
+          );
+        }
+        const bytes = decodeBase64(indexResource.db as string);
+        const result = await runSearch(
+          bytes,
+          args.query,
+          g,
+          context.logger,
+          args.limit,
+        );
+        const handle = await context.writeResource(
+          "search-results",
+          `search--${Date.now()}`,
+          result,
+        );
+        context.logger.info(
+          "Search complete: {facts} facts, {constraints} constraints",
+          {
+            facts: result.facts.length,
+            constraints: result.constraints.length,
+          },
+        );
         return { dataHandles: [handle] };
       },
     },
