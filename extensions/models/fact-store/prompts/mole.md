@@ -52,7 +52,10 @@ Run multiple targeted searches if needed — one per cited file or claim element
    - **Specificity** — would a junior engineer still need to look at the repo to
      understand the claim? If yes, reject
    - **Deduplication** — does this add anything beyond the scan data or existing
-     active facts?
+     active facts? If instead an *existing* fact is the one that's wrong, check
+     whether the proposal has `supersedesFactId` set to it — if not, reject and
+     ask ferret to re-propose with it set, rather than activating and leaving
+     both facts active at once.
    - **Consumption fit** — would this win a slot in a capped truth packet, or is
      it generic enough that a consuming agent would learn it anyway just by
      opening the repo? A fact can pass all four other criteria and still fail this.
@@ -63,7 +66,8 @@ Run multiple targeted searches if needed — one per cited file or claim element
    not what's running:
 
 ```bash
-# Activate
+# Activate — if the proposal has supersedesFactId set, this also
+# retires that fact automatically, atomically, in the same call
 swamp model method run facts activate \
   --input proposalId=<uuid> \
   --input reviewedBy=<tool>-mole --json --skip-reports

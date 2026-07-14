@@ -68,12 +68,22 @@ swamp model method run facts add_constraint \
 | `query` | Any consuming agent | Assemble a truth packet for a scope/task |
 | `list_proposals` | Mole / Ferret | List proposals by status |
 | `list_facts` | Any agent | List active facts with filters |
+| `coverage_gaps` | Ferret | Analyze knowledge gaps to prioritize discovery |
+
+### Export & Search
+
+| Method | Called by | Description |
+|--------|-----------|-------------|
+| `export` | Mole (after activating) | Export active facts/constraints to a local SQLite index (FTS5 + vector) |
+| `search` | Any agent | Hybrid FTS5 + vector search over the exported index |
 
 ### Administration
 
 | Method | Called by | Description |
 |--------|-----------|-------------|
 | `add_constraint` | Humans | Add a behavioral rule |
+| `retire_constraint` | Humans | Retire a constraint that no longer applies |
+| `retire_fact` | Consult-facts / Mole / Humans | Retire or supersede a stale active fact |
 
 ## Authority Tiers
 

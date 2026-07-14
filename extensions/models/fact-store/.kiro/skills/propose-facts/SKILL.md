@@ -199,14 +199,58 @@ Check yourself:
 
 ## Rejection handling
 
-When mole rejects a proposal, read the reason. Then:
+When mole rejects a proposal, read the reason, then resolve it.
+**Every rejected proposal should end up withdrawn** — whether you fix
+and resubmit, or drop the claim entirely. A rejected proposal that
+never gets withdrawn is a permanent orphan: `rejected` should stay as
+transient as `proposed` is, not accumulate forever as unresolved
+history that every future `list_proposals --input status=rejected`
+call has to wade through.
 
-- If you agree: `swamp model method run facts withdraw --input proposalId=<uuid>`
-- If the rejection is about evidence: fetch better evidence, re-propose with stronger backing
-- If the rejection is about specificity: tighten the claim, re-propose
-- If you disagree on substance: don't re-propose verbatim. Address the
-  rejection — change the kind, change the authority basis, narrow the
-  scope — or escalate to a human.
+1. Decide what to do with the claim:
+   - Evidence issue → fetch better evidence, re-propose with stronger backing
+   - Specificity issue → tighten the claim, re-propose
+   - Disagree on substance → change the kind, authority basis, or scope
+     and re-propose, or escalate to a human if you can't resolve it yourself
+   - Agree the claim was simply wrong → nothing to resubmit
+2. Either way, withdraw the original so it stops showing up as
+   unresolved: `swamp model method run facts withdraw --input proposalId=<uuid>`
+
+## Keeping facts current
+
+Facts don't self-expire. Nothing else in the system ever moves a fact
+out of `active` — if a stale one never gets retired, it stays active
+forever, indistinguishable from a fact that's still true. But retiring
+isn't your call to make unilaterally: an active fact earned its way in
+through mole's review, so removing one goes through the same gate,
+not around it. Your job is to flag the correction, not retire the old
+fact yourself.
+
+You're well-positioned to catch this during step 1 of the operating
+loop below (checking existing facts before proposing more) and again
+whenever a search result contradicts something already on record — the
+account changed, the tool was replaced, the file it cited no longer
+says what it used to. When that happens, propose the correction as
+normal, and set `supersedesFactId` to the stale fact's id:
+
+```bash
+swamp model method run facts propose \
+  --input kind=<snake_case_relation> \
+  --input scope=<repo-path-or-global> \
+  --input 'subjectRef={"refType":"repository","identityKind":"gitlab_path","identityValue":"group/repo"}' \
+  --input 'value=<corrected-value>' \
+  --input authorityBasis=<tier> \
+  --input proposedBy=<your-stable-identity> \
+  --input 'evidence=["cited/file"]' \
+  --input supersedesFactId=<stale-fact-id> --json --skip-reports
+```
+
+If mole activates this proposal, it retires the stale fact
+automatically, atomically, as part of that same activation — so the
+active set never briefly holds both the wrong value and the correction
+at once. If mole rejects it, the old fact correctly stays active, since
+the claimed correction never got verified. Either outcome is correct;
+neither requires you to touch the old fact directly.
 
 ## Constraints
 
@@ -242,7 +286,12 @@ capabilities early.
 
 For each repo in the scope of this pass:
 
-1. Check existing facts and your prior rejections for this repo
+1. Check existing facts and your prior rejections for this repo. If
+   anything you already know — or find while searching later in this
+   loop — contradicts an existing active fact, propose the correction
+   with `supersedesFactId` set (see "Keeping facts current" below)
+   rather than leaving a stale fact active alongside a new,
+   contradicting one.
 2. Ensure the repo is indexed (see below)
 3. Run `coverage_gaps` scoped to this repo and read its `detail` — it
    tells you which angle(s) are missing in plain language (real, derived

@@ -101,6 +101,7 @@ async function proposeOne(context: any, overrides?: Partial<{
   proposedBy: string;
   evidence: string[];
   subjectRef: typeof SAMPLE_SUBJECT;
+  supersedesFactId: string;
 }>) {
   return await model.methods.propose.execute({
     kind: overrides?.kind ?? "repository_deploys_to_account",
@@ -110,6 +111,7 @@ async function proposeOne(context: any, overrides?: Partial<{
     authorityBasis: (overrides?.authorityBasis ?? "file_content_observation") as any,
     proposedBy: overrides?.proposedBy ?? "ferret-agent",
     evidence: overrides?.evidence ?? ["terraform/main.tf:14"],
+    supersedesFactId: overrides?.supersedesFactId,
   }, context);
 }
 
@@ -261,6 +263,92 @@ Deno.test("activate - throws on rejected proposal", async () => {
     Error,
     "cannot activate",
   );
+});
+
+Deno.test("activate - supersedesFactId retires the old fact atomically", async () => {
+  const { context, store } = createFactStoreTestContext();
+
+  // Original fact
+  await proposeOne(context, { value: "111111111111" });
+  const firstProposalId = [...store.values()]
+    .find((r) => r.specName === "proposal")!.data.id as string;
+  await model.methods.activate.execute(
+    { proposalId: firstProposalId, reviewedBy: "mole" },
+    context,
+  );
+  const staleFact = [...store.values()].find((r) => r.specName === "fact")!;
+  const staleFactId = staleFact.data.id as string;
+
+  // Correcting proposal, flagged as superseding the first
+  await proposeOne(context, {
+    value: "222222222222",
+    supersedesFactId: staleFactId,
+  });
+  const secondProposalId = [...store.values()]
+    .find((r) => r.specName === "proposal" && r.data.status === "proposed")!
+    .data.id as string;
+
+  const result = await model.methods.activate.execute(
+    { proposalId: secondProposalId, reviewedBy: "mole" },
+    context,
+  );
+  // New fact handle + retired-fact handle.
+  assertEquals(result.dataHandles.length, 2);
+
+  const facts = [...store.values()].filter((r) => r.specName === "fact");
+  const stale = facts.find((f) => f.data.id === staleFactId)!;
+  const fresh = facts.find((f) => f.data.id !== staleFactId)!;
+
+  assertEquals(stale.data.status, "superseded");
+  assertEquals(stale.data.supersededByFactId, fresh.data.id);
+  assertEquals(stale.tags.status, "superseded");
+  assertEquals(fresh.data.status, "active");
+  assertEquals(fresh.data.value, "222222222222");
+});
+
+Deno.test("activate - without supersedesFactId leaves other facts untouched", async () => {
+  const { context, store } = createFactStoreTestContext();
+
+  await proposeOne(context, {
+    kind: "k1",
+    subjectRef: { refType: "repository", identityKind: "gitlab_path", identityValue: "r1" },
+  });
+  await proposeOne(context, {
+    kind: "k2",
+    subjectRef: { refType: "repository", identityKind: "gitlab_path", identityValue: "r2" },
+  });
+  const proposals = [...store.values()]
+    .filter((r) => r.specName === "proposal" && r.data.status === "proposed");
+
+  for (const p of proposals) {
+    const result = await model.methods.activate.execute(
+      { proposalId: p.data.id as string, reviewedBy: "mole" },
+      context,
+    );
+    assertEquals(result.dataHandles.length, 1);
+  }
+
+  const facts = [...store.values()].filter((r) => r.specName === "fact");
+  assertEquals(facts.length, 2);
+  assertEquals(facts.every((f) => f.data.status === "active"), true);
+});
+
+Deno.test("activate - a stale supersedesFactId doesn't block the new fact's activation", async () => {
+  const { context, store } = createFactStoreTestContext();
+
+  await proposeOne(context, { supersedesFactId: "does-not-exist" });
+  const proposalId = [...store.values()]
+    .find((r) => r.specName === "proposal")!.data.id as string;
+
+  const result = await model.methods.activate.execute(
+    { proposalId, reviewedBy: "mole" },
+    context,
+  );
+  // Only the new fact's handle -- the retire attempt failed silently.
+  assertEquals(result.dataHandles.length, 1);
+
+  const fact = [...store.values()].find((r) => r.specName === "fact")!;
+  assertEquals(fact.data.status, "active");
 });
 
 // ---------------------------------------------------------------------------
@@ -978,6 +1066,123 @@ Deno.test("retire_constraint - throws on already-retired constraint", async () =
 
   await assertRejects(
     () => model.methods.retire_constraint.execute({ constraintId }, context),
+    Error,
+    "already retired",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Tests: retire_fact
+// ---------------------------------------------------------------------------
+
+Deno.test("retire_fact - marks an active fact as retired", async () => {
+  const { context, store } = createFactStoreTestContext();
+
+  await proposeOne(context);
+  const proposalId = [...store.values()]
+    .find((r) => r.specName === "proposal")!.data.id as string;
+  await model.methods.activate.execute({ proposalId, reviewedBy: "mole" }, context);
+
+  const fact = [...store.values()].find((r) => r.specName === "fact")!;
+  const factId = fact.data.id as string;
+
+  const result = await model.methods.retire_fact.execute(
+    { factId, reason: "Account was decommissioned" },
+    context,
+  );
+  assertEquals(result.dataHandles.length, 1);
+
+  const updated = [...store.values()].find(
+    (r) => r.specName === "fact" && r.data.id === factId,
+  )!;
+  assertEquals(updated.data.status, "retired");
+  assertEquals(updated.data.retiredReason, "Account was decommissioned");
+  assertEquals(typeof updated.data.retiredAt, "string");
+  assertEquals(updated.tags.status, "retired");
+  // Original fields survive retirement.
+  assertEquals(updated.data.kind, "repository_deploys_to_account");
+});
+
+Deno.test("retire_fact - supersededByFactId sets status to superseded", async () => {
+  const { context, store } = createFactStoreTestContext();
+
+  await proposeOne(context);
+  const proposalId = [...store.values()]
+    .find((r) => r.specName === "proposal")!.data.id as string;
+  await model.methods.activate.execute({ proposalId, reviewedBy: "mole" }, context);
+  const factId = [...store.values()].find((r) => r.specName === "fact")!
+    .data.id as string;
+
+  await model.methods.retire_fact.execute(
+    { factId, reason: "Corrected account ID", supersededByFactId: "new-fact-id" },
+    context,
+  );
+
+  const updated = [...store.values()].find(
+    (r) => r.specName === "fact" && r.data.id === factId,
+  )!;
+  assertEquals(updated.data.status, "superseded");
+  assertEquals(updated.data.supersededByFactId, "new-fact-id");
+  assertEquals(updated.tags.status, "superseded");
+});
+
+Deno.test("retire_fact - retired facts disappear from list_facts and query", async () => {
+  const { context, store } = createFactStoreTestContext();
+
+  await proposeOne(context, { scope: "myorg/svc" });
+  const proposalId = [...store.values()]
+    .find((r) => r.specName === "proposal")!.data.id as string;
+  await model.methods.activate.execute({ proposalId, reviewedBy: "mole" }, context);
+  const factId = [...store.values()].find((r) => r.specName === "fact")!
+    .data.id as string;
+
+  await model.methods.retire_fact.execute(
+    { factId, reason: "No longer accurate" },
+    context,
+  );
+
+  const listResult = await model.methods.list_facts.execute(
+    { offset: 0, limit: 100 },
+    context,
+  );
+  const listData = store.get(listResult.dataHandles[0].name)!.data;
+  assertEquals(listData.total, 0);
+
+  const queryResult = await model.methods.query.execute(
+    { scope: "myorg/svc", limit: 50 },
+    context,
+  );
+  const packet = store.get(queryResult.dataHandles[0].name)!.data;
+  assertEquals((packet.facts as any[]).length, 0);
+});
+
+Deno.test("retire_fact - throws on non-existent fact", async () => {
+  const { context } = createFactStoreTestContext();
+
+  await assertRejects(
+    () => model.methods.retire_fact.execute(
+      { factId: "nope", reason: "doesn't matter" },
+      context,
+    ),
+    Error,
+    "not found",
+  );
+});
+
+Deno.test("retire_fact - throws when the fact is already retired", async () => {
+  const { context, store } = createFactStoreTestContext();
+
+  await proposeOne(context);
+  const proposalId = [...store.values()]
+    .find((r) => r.specName === "proposal")!.data.id as string;
+  await model.methods.activate.execute({ proposalId, reviewedBy: "mole" }, context);
+  const factId = [...store.values()].find((r) => r.specName === "fact")!
+    .data.id as string;
+
+  await model.methods.retire_fact.execute({ factId, reason: "first" }, context);
+
+  await assertRejects(
+    () => model.methods.retire_fact.execute({ factId, reason: "second" }, context),
     Error,
     "already retired",
   );

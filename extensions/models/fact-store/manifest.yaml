@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@twonines/fact-store"
-version: "2026.07.12.1"
+version: "2026.07.13.1"
 description: >
   Stores, validates, and serves organizational facts for AI agent
   consumption. Supports a propose→review→activate lifecycle with
