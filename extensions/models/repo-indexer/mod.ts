@@ -3,7 +3,7 @@
  * OpenAI-compatible API, and writes a SQLite database supporting hybrid
  * search (FTS5 keyword + vector cosine with RRF reranking).
  *
- * Methods: index, search, reindex, status, discover.
+ * Methods: index, index_batch, search, reindex, status, discover.
  *
  * @module
  */
@@ -190,6 +190,18 @@ const ListSearchesOutputSchema = z.object({
   searches: z.array(SearchOutputSchema),
   total: z.number(),
   queriedAt: z.string(),
+});
+
+const IndexBatchFailureSchema = z.object({
+  repo: z.string(),
+  error: z.string(),
+});
+
+const IndexBatchResultSchema = z.object({
+  succeeded: z.array(z.string()),
+  failed: z.array(IndexBatchFailureSchema),
+  totalRequested: z.number(),
+  completedAt: z.string(),
 });
 
 // ---------------------------------------------------------------------------
@@ -940,6 +952,120 @@ function hybridSearch(
 }
 
 // ---------------------------------------------------------------------------
+// Shared per-repo indexing logic (used by both `index` and `index_batch`)
+// ---------------------------------------------------------------------------
+
+interface IndexOneResult {
+  handle: unknown;
+  output: z.infer<typeof IndexOutputSchema>;
+}
+
+/**
+ * Clone, chunk, embed, and write the index for a single repository.
+ * Shared by `index` (one repo) and `index_batch` (many repos, one method
+ * call, one lock acquisition) so the two never diverge in behavior.
+ */
+async function indexOneRepo(
+  projectPath: string,
+  embedConfig: EmbedConfig,
+  gitlabUrl: string,
+  gitlabToken: string,
+  excludePatterns: string[] | undefined,
+  context: Ctx,
+): Promise<IndexOneResult> {
+  const instanceName = projectPath.replaceAll("/", "--");
+
+  context.logger.info("Indexing repository {path}", { path: projectPath });
+
+  const tmpDir = Deno.makeTempDirSync({ prefix: "repo-indexer-" });
+  try {
+    const cloneUrl = `${gitlabUrl}/${projectPath}.git`;
+    exec(["git", "clone", "--depth", "1", cloneUrl, tmpDir], {
+      env: {
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_ASKPASS: "echo",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "http.extraHeader",
+        GIT_CONFIG_VALUE_0: `PRIVATE-TOKEN: ${gitlabToken}`,
+      },
+    });
+
+    const commitSha = exec(["git", "rev-parse", "HEAD"], { cwd: tmpDir })
+      .trim();
+
+    const filePaths = walkTextFiles(tmpDir, excludePatterns);
+    context.logger.info("Found {count} text files", {
+      count: filePaths.length,
+    });
+
+    const allChunks: Chunk[] = [];
+    const fileHashes = new Map<string, string>();
+
+    for (const relPath of filePaths) {
+      const fullPath = `${tmpDir}/${relPath}`;
+      const raw = Deno.readFileSync(fullPath);
+      if (isBinaryContent(raw)) continue;
+      const content = new TextDecoder().decode(raw);
+      const hash = await sha256(content);
+      fileHashes.set(relPath, hash);
+      const chunks = chunkFile(relPath, content);
+      allChunks.push(...chunks);
+    }
+
+    const validChunks = allChunks.filter((c) => c.content.trim().length > 0);
+
+    context.logger.info("Chunked into {count} chunks, embedding...", {
+      count: validChunks.length,
+    });
+
+    const vectors = await embedAllChunks(embedConfig, validChunks);
+
+    const db = await createDb(context.logger);
+    try {
+      insertChunks(db, validChunks, vectors, fileHashes);
+      setMeta(db, "commit_sha", commitSha);
+      setMeta(db, "repo_path", projectPath);
+      setMeta(db, "indexed_at", new Date().toISOString());
+      setMeta(db, "embed_model", embedConfig.model);
+      setMeta(db, "embed_dim", String(embedConfig.dim));
+      setMeta(db, "chunk_count", String(validChunks.length));
+    } catch (e) {
+      db.close();
+      throw e;
+    }
+    const dbBytes = db.export();
+    db.close();
+
+    const dbBase64 = encodeBase64(dbBytes);
+
+    const output: z.infer<typeof IndexOutputSchema> = {
+      repo: projectPath,
+      commitSha,
+      chunkCount: validChunks.length,
+      filesIndexed: fileHashes.size,
+      indexedAt: new Date().toISOString(),
+    };
+
+    const handle = await context.writeResource(
+      "index",
+      instanceName,
+      { ...output, dbSizeBytes: dbBytes.byteLength, db: dbBase64 },
+    );
+
+    context.logger.info(
+      "Index complete: {chunks} chunks from {files} files",
+      { chunks: validChunks.length, files: fileHashes.size },
+    );
+
+    return { handle, output };
+  } finally {
+    try {
+      Deno.removeSync(tmpDir, { recursive: true });
+    } catch { /* best-effort cleanup */ }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
 
@@ -951,7 +1077,7 @@ function hybridSearch(
  */
 export const model = {
   type: "@twonines/repo-indexer",
-  version: "2026.07.10.1",
+  version: "2026.07.13.1",
   description:
     "Clones a GitLab repository, chunks all text files, embeds them, and writes " +
     "a SQLite database supporting hybrid search (FTS5 + vector cosine + RRF). " +
@@ -994,6 +1120,13 @@ export const model = {
       lifetime: "1h" as const,
       garbageCollection: 3,
     },
+    "index-batch-result": {
+      description:
+        "Summary of an index_batch call: which repos succeeded, which failed and why",
+      schema: IndexBatchResultSchema,
+      lifetime: "1h" as const,
+      garbageCollection: 3,
+    },
   },
   methods: {
     index: {
@@ -1017,109 +1150,92 @@ export const model = {
           model: g.embedModel ?? "text-embedding-3-small",
           dim: g.embedDim ?? 1536,
         };
-        const projectPath = args.projectPath;
-        const instanceName = projectPath.replaceAll("/", "--");
+        const { handle } = await indexOneRepo(
+          args.projectPath,
+          embedConfig,
+          g.gitlabUrl,
+          g.gitlabToken,
+          g.excludePatterns,
+          context,
+        );
+        return { dataHandles: [handle] };
+      },
+    },
 
-        context.logger.info("Indexing repository {path}", {
-          path: projectPath,
-        });
+    index_batch: {
+      description:
+        "Index multiple repositories in a single call. Clones, chunks, " +
+        "and embeds each repo in turn, writing one index resource per " +
+        "repo — a single method call and lock acquisition rather than " +
+        "N separate `index` calls against this model. A failure on one " +
+        "repo does not abort the rest of the batch; failures are " +
+        "collected and returned alongside successes.",
+      arguments: z.object({
+        projectPaths: z.array(z.string()).min(1).describe(
+          "Repository paths to index (e.g. ['group/repo1', 'group/repo2'])",
+        ),
+      }),
+      execute: async (
+        args: { projectPaths: string[] },
+        context: Ctx,
+      ) => {
+        const g = context.globalArgs as z.infer<typeof GlobalArgsSchema>;
+        const embedConfig: EmbedConfig = {
+          url: g.embedUrl,
+          token: g.embedToken,
+          model: g.embedModel ?? "text-embedding-3-small",
+          dim: g.embedDim ?? 1536,
+        };
 
-        // Clone to temp dir
-        const tmpDir = Deno.makeTempDirSync({ prefix: "repo-indexer-" });
-        try {
-          const cloneUrl = `${g.gitlabUrl}/${projectPath}.git`;
-          exec(["git", "clone", "--depth", "1", cloneUrl, tmpDir], {
-            env: {
-              GIT_TERMINAL_PROMPT: "0",
-              GIT_ASKPASS: "echo",
-              GIT_CONFIG_COUNT: "1",
-              GIT_CONFIG_KEY_0: "http.extraHeader",
-              GIT_CONFIG_VALUE_0: `PRIVATE-TOKEN: ${g.gitlabToken}`,
-            },
-          });
+        const dataHandles: unknown[] = [];
+        const succeeded: string[] = [];
+        const failed: Array<{ repo: string; error: string }> = [];
 
-          // Get commit SHA
-          const commitSha = exec(["git", "rev-parse", "HEAD"], { cwd: tmpDir })
-            .trim();
-
-          // Walk and read files
-          const filePaths = walkTextFiles(tmpDir, g.excludePatterns);
-          context.logger.info("Found {count} text files", {
-            count: filePaths.length,
-          });
-
-          const allChunks: Chunk[] = [];
-          const fileHashes = new Map<string, string>();
-
-          for (const relPath of filePaths) {
-            const fullPath = `${tmpDir}/${relPath}`;
-            const raw = Deno.readFileSync(fullPath);
-            if (isBinaryContent(raw)) continue;
-            const content = new TextDecoder().decode(raw);
-            const hash = await sha256(content);
-            fileHashes.set(relPath, hash);
-            const chunks = chunkFile(relPath, content);
-            allChunks.push(...chunks);
-          }
-
-          // Filter out empty/whitespace-only chunks that would fail embedding
-          const validChunks = allChunks.filter(
-            (c) => c.content.trim().length > 0,
-          );
-
-          context.logger.info("Chunked into {count} chunks, embedding...", {
-            count: validChunks.length,
-          });
-
-          // Embed all chunks
-          const vectors = await embedAllChunks(embedConfig, validChunks);
-
-          // Write SQLite db (in-memory via WASM, then export bytes)
-          const db = await createDb(context.logger);
+        for (const projectPath of args.projectPaths) {
           try {
-            insertChunks(db, validChunks, vectors, fileHashes);
-            setMeta(db, "commit_sha", commitSha);
-            setMeta(db, "repo_path", projectPath);
-            setMeta(db, "indexed_at", new Date().toISOString());
-            setMeta(db, "embed_model", embedConfig.model);
-            setMeta(db, "embed_dim", String(embedConfig.dim));
-            setMeta(db, "chunk_count", String(validChunks.length));
+            const { handle } = await indexOneRepo(
+              projectPath,
+              embedConfig,
+              g.gitlabUrl,
+              g.gitlabToken,
+              g.excludePatterns,
+              context,
+            );
+            dataHandles.push(handle);
+            succeeded.push(projectPath);
           } catch (e) {
-            db.close();
-            throw e;
+            const message = e instanceof Error ? e.message : String(e);
+            context.logger.info(
+              "index_batch: failed to index {repo}: {error}",
+              { repo: projectPath, error: message },
+            );
+            failed.push({ repo: projectPath, error: message });
           }
-          const dbBytes = db.export();
-          db.close();
-
-          // Persist as data artifact (db bytes are base64-encoded for S3 sync)
-          const dbBase64 = encodeBase64(dbBytes);
-
-          const handle = await context.writeResource(
-            "index",
-            instanceName,
-            {
-              repo: projectPath,
-              commitSha,
-              chunkCount: validChunks.length,
-              filesIndexed: fileHashes.size,
-              indexedAt: new Date().toISOString(),
-              dbSizeBytes: dbBytes.byteLength,
-              db: dbBase64,
-            },
-          );
-
-          context.logger.info(
-            "Index complete: {chunks} chunks from {files} files",
-            { chunks: validChunks.length, files: fileHashes.size },
-          );
-
-          return { dataHandles: [handle] };
-        } finally {
-          // Clean up temp dir
-          try {
-            Deno.removeSync(tmpDir, { recursive: true });
-          } catch { /* best-effort cleanup */ }
         }
+
+        const result: z.infer<typeof IndexBatchResultSchema> = {
+          succeeded,
+          failed,
+          totalRequested: args.projectPaths.length,
+          completedAt: new Date().toISOString(),
+        };
+
+        context.logger.info(
+          "index_batch complete: {succeeded} succeeded, {failed} failed of {total}",
+          {
+            succeeded: succeeded.length,
+            failed: failed.length,
+            total: args.projectPaths.length,
+          },
+        );
+
+        const summaryHandle = await context.writeResource(
+          "index-batch-result",
+          `batch--${Date.now()}`,
+          result,
+        );
+
+        return { dataHandles: [...dataHandles, summaryHandle] };
       },
     },
 

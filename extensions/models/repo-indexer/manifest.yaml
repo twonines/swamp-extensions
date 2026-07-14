@@ -1,11 +1,11 @@
 manifestVersion: 1
 name: "@twonines/repo-indexer"
-version: "2026.07.10.1"
+version: "2026.07.13.1"
 description: >
   Clones a GitLab repository, chunks all text files, embeds them via an
   OpenAI-compatible API, and writes a SQLite database supporting hybrid
   search (FTS5 keyword + vector cosine with RRF reranking). Methods: index,
-  search, reindex, status, discover, list-indexed, list-searches.
+  index_batch, search, reindex, status, discover, list-indexed, list-searches.
 repository: "https://codeberg.org/twonines/swamp-extensions"
 paths:
   base: manifest
