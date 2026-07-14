@@ -1,0 +1,30 @@
+manifestVersion: 1
+name: "@twonines/git-workspace"
+version: "2026.07.14.3"
+description: >
+  Local git operations model — clone, branch, read, commit, push. Designed for
+  agent-driven development workflows where code changes are authored locally and
+  pushed to a remote forge. Supports a configurable workspace layout (default:
+  $HOME/{host}/{group}/{project}) and commit message format enforcement.
+repository: "https://codeberg.org/twonines/swamp-extensions"
+paths:
+  base: manifest
+models:
+  - mod.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.md
+labels:
+  - git
+  - workspace
+  - local
+  - clone
+  - commit
+  - push
+  - development
+dependencies: []
