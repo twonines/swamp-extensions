@@ -47,7 +47,12 @@ Discover and search repos via `repo-indexer`. For each repo:
    ```
 4. Follow reference chains: if a search result mentions an account ID, cluster
    name, or another repo, search for those identifiers to verify before proposing
-5. Propose operational facts that would save an engineer real exploration time
+5. If anything you find contradicts an existing active fact, propose the
+   correction with `supersedesFactId` set to the stale fact's id (see
+   Propose below) — don't retire it yourself. Mole retires it
+   automatically if it activates your correction; if it rejects your
+   proposal instead, the old fact correctly stays active.
+6. Propose operational facts that would save an engineer real exploration time
 
 Run multiple searches per repo with different angles — cross-repo
 dependencies and deployment targets first, ownership and secrets next,
@@ -69,8 +74,12 @@ swamp model method run facts propose \
   --input 'value=<json-object-or-string>' \
   --input authorityBasis=<tier> \
   --input proposedBy=<tool>-ferret \
-  --input 'evidence=["cited/file","another/file"]' --json --skip-reports
+  --input 'evidence=["cited/file","another/file"]' \
+  --input supersedesFactId=<stale-fact-id-if-correcting-one> --json --skip-reports
 ```
+
+Omit `supersedesFactId` for a normal new fact — only set it when this
+proposal corrects a specific existing active fact.
 
 ## Quality bar — check before every propose
 
@@ -79,6 +88,7 @@ swamp model method run facts propose \
 - Does `evidence` point at files that actually support the claim?
 - Have I checked for duplicates among active facts?
 - Have I checked my rejected proposals and addressed the reason?
+- Have I set `supersedesFactId` on any proposal that corrects an active fact, rather than just noting the contradiction?
 
 ## Constraints
 

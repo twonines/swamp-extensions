@@ -128,6 +128,18 @@ Does this fact add value beyond the scan metadata?
 Also check existing active facts: if this duplicates one already in the
 store, reject with a reference to the existing fact.
 
+If instead the existing active fact is the one that's wrong — this
+proposal's evidence contradicts it rather than just repeating it —
+that's not a duplicate to reject either. Check whether the proposal
+already has `supersedesFactId` set to the stale fact's id:
+
+- **If it does**, activate as normal — retiring the old fact happens
+  automatically, atomically, as part of that same activation.
+- **If it doesn't**, don't activate it as-is: that would leave both the
+  old (wrong) and new (correct) facts active at once. Reject with a
+  reference to the fact it should have flagged, so ferret can
+  re-propose with `supersedesFactId` set.
+
 ### 5. Consumption fit
 
 Would this fact win a slot in a capped, hint-matched truth packet, or is
@@ -214,6 +226,13 @@ Activate only when:
 - It doesn't duplicate an existing active fact
 - It would plausibly win a slot in a capped truth packet for its scope,
   not just be true (criterion 5)
+
+If the proposal has `supersedesFactId` set, activating it also retires
+that fact automatically, in the same call — you don't need a separate
+step. Facts don't self-expire otherwise; this is the only path that
+removes one from the active set once it's wrong, so verify the
+superseded fact really is stale before activating, the same way you'd
+verify the new claim itself.
 
 ### Reject
 

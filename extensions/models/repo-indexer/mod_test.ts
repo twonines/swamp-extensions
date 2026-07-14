@@ -112,10 +112,20 @@ function writeFixtureFiles(repoPath: string, files: Record<string, string>) {
   }
 }
 
-function createFixtureRepo(files: Record<string, string>) {
-  const base = Deno.makeTempDirSync({ prefix: "repo-indexer-fixture-" });
-  const groupDir = `${base}/group`;
-  const repoPath = `${groupDir}/myrepo.git`;
+function createFixtureRepo(
+  files: Record<string, string>,
+  opts?: { name?: string; existingGroupDir?: string },
+) {
+  const name = opts?.name ?? "myrepo";
+  let base: string | undefined;
+  let groupDir: string;
+  if (opts?.existingGroupDir) {
+    groupDir = opts.existingGroupDir;
+  } else {
+    base = Deno.makeTempDirSync({ prefix: "repo-indexer-fixture-" });
+    groupDir = `${base}/group`;
+  }
+  const repoPath = `${groupDir}/${name}.git`;
   Deno.mkdirSync(repoPath, { recursive: true });
   runGit(["init", "-q"], repoPath);
   runGit(["config", "user.email", "test@test.com"], repoPath);
@@ -126,15 +136,19 @@ function createFixtureRepo(files: Record<string, string>) {
 
   return {
     gitlabUrl: groupDir,
-    projectPath: "myrepo",
+    projectPath: name,
     repoPath,
+    groupDir,
     /** Overwrite/add files and commit, to exercise reindex's diff logic. */
     commitChange: (changedFiles: Record<string, string>) => {
       writeFixtureFiles(repoPath, changedFiles);
       runGit(["add", "."], repoPath);
       runGit(["commit", "-qm", "update"], repoPath);
     },
+    // Fixtures sharing an existingGroupDir don't own the temp dir --
+    // only the fixture that created it cleans it up.
     cleanup: () => {
+      if (!base) return;
       try {
         Deno.removeSync(base, { recursive: true });
       } catch {
@@ -218,6 +232,89 @@ Deno.test("index - clones a real repo, chunks, embeds, and writes a queryable in
   } finally {
     stub.restore();
     fixture.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Tests: index_batch
+// ---------------------------------------------------------------------------
+
+Deno.test("index_batch - indexes multiple repos in a single call", async () => {
+  const stub = stubExternalFetch();
+  const fixtureA = createFixtureRepo(
+    { "README.md": "backup service for the platform" },
+    { name: "repo-a" },
+  );
+  const fixtureB = createFixtureRepo(
+    { "README.md": "billing service handles invoices" },
+    { name: "repo-b", existingGroupDir: fixtureA.groupDir },
+  );
+  try {
+    const { context, store } = createRepoIndexerTestContext({
+      globalArgs: { gitlabUrl: fixtureA.gitlabUrl },
+    });
+
+    const result = await model.methods.index_batch.execute(
+      { projectPaths: ["repo-a", "repo-b"] },
+      context,
+    );
+    // One index resource per repo, plus the batch summary resource.
+    assertEquals(result.dataHandles.length, 3);
+
+    const indexA = store.get("repo-a")!.data as any;
+    const indexB = store.get("repo-b")!.data as any;
+    assertEquals(indexA.repo, "repo-a");
+    assertEquals(indexB.repo, "repo-b");
+    assertEquals(indexA.chunkCount > 0, true);
+    assertEquals(indexB.chunkCount > 0, true);
+
+    const summary = [...store.values()].find(
+      (r) => r.specName === "index-batch-result",
+    )!.data as any;
+    assertEquals(summary.succeeded, ["repo-a", "repo-b"]);
+    assertEquals(summary.failed, []);
+    assertEquals(summary.totalRequested, 2);
+  } finally {
+    stub.restore();
+    fixtureB.cleanup();
+    fixtureA.cleanup();
+  }
+});
+
+Deno.test("index_batch - a failing repo doesn't abort the rest of the batch", async () => {
+  const stub = stubExternalFetch();
+  const fixtureA = createFixtureRepo(
+    { "README.md": "backup service for the platform" },
+    { name: "repo-a" },
+  );
+  try {
+    const { context, store } = createRepoIndexerTestContext({
+      globalArgs: { gitlabUrl: fixtureA.gitlabUrl },
+    });
+
+    // "repo-missing" doesn't exist under the fixture group -- its clone
+    // will fail, exercising the per-repo failure path.
+    const result = await model.methods.index_batch.execute(
+      { projectPaths: ["repo-a", "repo-missing"] },
+      context,
+    );
+    // Only repo-a's index resource, plus the batch summary.
+    assertEquals(result.dataHandles.length, 2);
+
+    const indexA = store.get("repo-a")!.data as any;
+    assertEquals(indexA.repo, "repo-a");
+
+    const summary = [...store.values()].find(
+      (r) => r.specName === "index-batch-result",
+    )!.data as any;
+    assertEquals(summary.succeeded, ["repo-a"]);
+    assertEquals(summary.failed.length, 1);
+    assertEquals(summary.failed[0].repo, "repo-missing");
+    assertEquals(typeof summary.failed[0].error, "string");
+    assertEquals(summary.totalRequested, 2);
+  } finally {
+    stub.restore();
+    fixtureA.cleanup();
   }
 });
 

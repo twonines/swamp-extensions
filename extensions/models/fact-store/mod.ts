@@ -52,6 +52,11 @@ const FactSchema = z.object({
   activatedBy: z.string().optional(),
   createdAt: z.string(),
   activatedAt: z.string().optional(),
+  retiredReason: z.string().optional(),
+  retiredAt: z.string().optional(),
+  supersededByFactId: z.string().optional().describe(
+    "ID of the fact that replaces this one, if status is 'superseded'",
+  ),
 });
 
 const ProposalSchema = z.object({
@@ -64,6 +69,10 @@ const ProposalSchema = z.object({
   status: z.enum(["proposed", "activated", "rejected", "withdrawn"]),
   proposedBy: z.string(),
   evidence: z.array(z.string()).optional(),
+  supersedesFactId: z.string().optional().describe(
+    "ID of an existing active fact this proposal, if activated, corrects. " +
+      "Mole retires that fact automatically on activation.",
+  ),
   rejectionReason: z.string().optional(),
   createdAt: z.string(),
   reviewedAt: z.string().optional(),
@@ -216,8 +225,16 @@ function now(): string {
   return new Date().toISOString();
 }
 
-function factInstanceName(kind: string, identityValue: string): string {
-  return `fact--${kind}--${encodeURIComponent(identityValue)}`;
+/**
+ * Fact resources are named by the fact's own id, not by (kind,
+ * identityValue) -- two facts for the same kind+subject (e.g. an original
+ * and its correction) must never collide on one storage slot. A shared,
+ * deterministic name would let the second activation silently overwrite
+ * the first fact's content before it could ever be marked superseded or
+ * read again, destroying history with no error and no trace.
+ */
+function factInstanceName(id: string): string {
+  return `fact--${id}`;
 }
 
 function proposalInstanceName(id: string): string {
@@ -247,6 +264,80 @@ function decodeBase64(str: string): Uint8Array {
   return bytes;
 }
 
+/**
+ * Retire or supersede an active fact by id. Shared by the standalone
+ * `retire_fact` method and `activate`'s automatic supersession when a
+ * proposal carries `supersedesFactId` — one lookup-and-write path so the
+ * two never diverge.
+ */
+async function retireFactById(
+  factId: string,
+  reason: string,
+  supersededByFactId: string | undefined,
+  context: Ctx,
+): Promise<{ dataHandles: unknown[] }> {
+  const allData = await context.dataRepository.findAllForModel(
+    context.modelType,
+    context.modelId,
+  );
+  const factRecords = allData.filter(
+    (d: { tags: Record<string, string> }) => d.tags.specName === "fact",
+  );
+
+  let target: { name: string; data: z.infer<typeof FactSchema> } | null = null;
+  for (const d of factRecords) {
+    const content = await context.dataRepository.getContent(
+      context.modelType,
+      context.modelId,
+      d.name,
+    );
+    if (!content) continue;
+    try {
+      const parsed = JSON.parse(new TextDecoder().decode(content));
+      if (parsed.id === factId) {
+        target = { name: d.name, data: parsed };
+        break;
+      }
+    } catch { /* skip unparseable */ }
+  }
+
+  if (!target) {
+    throw new Error(`Fact ${factId} not found`);
+  }
+  if (target.data.status !== "active") {
+    throw new Error(`Fact ${factId} is already ${target.data.status}`);
+  }
+
+  const newStatus = supersededByFactId ? "superseded" : "retired";
+  const updated: z.infer<typeof FactSchema> = {
+    ...target.data,
+    status: newStatus,
+    retiredReason: reason,
+    retiredAt: now(),
+    ...(supersededByFactId ? { supersededByFactId } : {}),
+  };
+
+  const handle = await context.writeResource(
+    "fact",
+    target.name,
+    updated,
+    {
+      tags: {
+        status: newStatus,
+        kind: target.data.kind,
+        scope: target.data.scope,
+        refType: target.data.subjectRef.refType,
+        identityKind: target.data.subjectRef.identityKind,
+        identityValue: target.data.subjectRef.identityValue,
+        authorityBasis: target.data.authorityBasis,
+      },
+    },
+  );
+
+  context.logger.info("Fact {status}", { status: newStatus, id: factId });
+  return { dataHandles: [handle] };
+}
+
 // deno-lint-ignore no-explicit-any
 type Ctx = any;
 
@@ -264,7 +355,7 @@ type Ctx = any;
  */
 export const model = {
   type: "@twonines/fact-store",
-  version: "2026.07.12.1",
+  version: "2026.07.13.1",
   description:
     "Stores, validates, and serves organizational facts for AI agent consumption. " +
     "Supports a propose→review→activate lifecycle with adversarial validation (ferret/mole pattern).",
@@ -372,6 +463,11 @@ export const model = {
         evidence: z.array(z.string()).optional().describe(
           "References to scan data or other sources",
         ),
+        supersedesFactId: z.string().optional().describe(
+          "ID of an existing active fact this proposal corrects, if any. " +
+            "If this proposal is activated, mole's activate call retires " +
+            "that fact automatically. Leave unset for a normal new fact.",
+        ),
       }),
       execute: async (
         args: {
@@ -382,6 +478,7 @@ export const model = {
           authorityBasis: z.infer<typeof AuthorityBasisSchema>;
           proposedBy: string;
           evidence?: string[];
+          supersedesFactId?: string;
         },
         context: Ctx,
       ) => {
@@ -396,6 +493,7 @@ export const model = {
           status: "proposed",
           proposedBy: args.proposedBy,
           evidence: args.evidence,
+          supersedesFactId: args.supersedesFactId,
           createdAt: now(),
         };
 
@@ -489,7 +587,7 @@ export const model = {
 
         const handle = await context.writeResource(
           "fact",
-          factInstanceName(proposal.kind, proposal.subjectRef.identityValue),
+          factInstanceName(factId),
           fact,
           {
             tags: {
@@ -509,7 +607,37 @@ export const model = {
           kind: proposal.kind,
           subject: proposal.subjectRef.identityValue,
         });
-        return { dataHandles: [handle] };
+
+        const dataHandles: unknown[] = [handle];
+
+        // If this proposal was flagged as correcting an existing fact,
+        // retire that fact now, in the same reviewed action that brought
+        // the correction into the active set — activation stays the one
+        // gate both additions and removals from the active set go through.
+        // A failure here (e.g. the referenced fact was already retired by
+        // someone else) must not undo the activation that already
+        // succeeded; log it and move on rather than throwing.
+        if (proposal.supersedesFactId) {
+          try {
+            const retireResult = await retireFactById(
+              proposal.supersedesFactId,
+              `Superseded by activated proposal ${args.proposalId}`,
+              factId,
+              context,
+            );
+            dataHandles.push(...retireResult.dataHandles);
+          } catch (e) {
+            context.logger.info(
+              "Could not retire superseded fact {supersedesFactId}: {error}",
+              {
+                supersedesFactId: proposal.supersedesFactId,
+                error: e instanceof Error ? e.message : String(e),
+              },
+            );
+          }
+        }
+
+        return { dataHandles };
       },
     },
 
@@ -1008,6 +1136,41 @@ export const model = {
           id: args.constraintId,
         });
         return { dataHandles: [handle] };
+      },
+    },
+
+    retire_fact: {
+      description:
+        "Retire or supersede an active fact that's no longer accurate. " +
+        "Facts don't self-expire — without this, the active set can only " +
+        "ever grow, since nothing else ever moves a fact out of 'active'. " +
+        "Used during drift correction (see consult-facts) once a " +
+        "replacement fact has been activated, or whenever a human/mole " +
+        "confirms a fact is stale with nothing to replace it.",
+      arguments: z.object({
+        factId: z.string().describe(
+          "ID of the fact to retire (its own id field, from query/list_facts output)",
+        ),
+        reason: z.string().describe("Why this fact is no longer accurate"),
+        supersededByFactId: z.string().optional().describe(
+          "ID of the fact that replaces this one. If set, status becomes " +
+            "'superseded' instead of 'retired'.",
+        ),
+      }),
+      execute: async (
+        args: {
+          factId: string;
+          reason: string;
+          supersededByFactId?: string;
+        },
+        context: Ctx,
+      ) => {
+        return await retireFactById(
+          args.factId,
+          args.reason,
+          args.supersededByFactId,
+          context,
+        );
       },
     },
 

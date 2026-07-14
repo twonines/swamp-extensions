@@ -144,9 +144,17 @@ what you see live contradicts what the fact says:
 2. **Confirm the drift.** Run the same verification the ferret would
    have run — `aws describe-*`, read the cited file at HEAD, etc.
 3. **Bookend to `propose-facts`.** Propose a new fact with the correct
-   value and cite the divergence in `evidence`. The mole will activate
-   the new fact; the stale one can be `withdraw`n by whoever originally
-   proposed it, or flagged for the human.
+   value and cite the divergence in `evidence`. Once the mole activates
+   the new fact, retire the stale one — `withdraw` only works on
+   proposals, not already-active facts:
+   ```bash
+   swamp model method run facts retire_fact \
+     --input factId=<stale-fact-id> \
+     --input reason="<what changed>" \
+     --input supersededByFactId=<new-fact-id> --json --skip-reports
+   ```
+   If you can't act directly, flag it for mole or a human instead of
+   leaving the stale fact active.
 4. **Note it in the current task's output** so the human sees drift
    was detected and handled.
 
