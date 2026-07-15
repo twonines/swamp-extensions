@@ -471,3 +471,234 @@ Deno.test("writeResource instance names never contain slashes", async () => {
     await cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Tests: branch - tracks existing remote branch
+// ---------------------------------------------------------------------------
+
+Deno.test("branch - tracks existing remote branch", async () => {
+  const { remoteDir, localDir, cleanup } = await setupTestRepo();
+  const testCloneDir = `${localDir}-branch-track-test`;
+
+  try {
+    // Create a branch with content on the remote via the original local
+    await run(["git", "checkout", "-b", "feature-xyz"], localDir);
+    await Deno.writeTextFile(`${localDir}/feature.txt`, "feature content\n");
+    await run(["git", "add", "-A"], localDir);
+    await run(["git", "commit", "-m", "Add feature"], localDir);
+    await run(["git", "push", "origin", "feature-xyz"], localDir);
+    await run(["git", "checkout", "main"], localDir);
+
+    // Clone fresh — only has main checked out
+    await run(["git", "clone", remoteDir, testCloneDir]);
+
+    const ctx = createMockContext({
+      host: "test.example.com",
+      defaultBranch: "main",
+    });
+
+    // Branch should track the remote branch, not create a new one from main
+    await model.methods.branch.execute(
+      { project: "org/repo", branch: "feature-xyz", localPath: testCloneDir },
+      ctx,
+    );
+
+    // Verify we're on the branch
+    const branchResult = await run(
+      ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+      testCloneDir,
+    );
+    assertEquals(branchResult.stdout, "feature-xyz");
+
+    // Verify the branch has the feature file (came from remote, not new from main)
+    const content = await Deno.readTextFile(`${testCloneDir}/feature.txt`);
+    assertEquals(content, "feature content\n");
+  } finally {
+    await Deno.remove(testCloneDir, { recursive: true }).catch(() => {});
+    await cleanup();
+  }
+});
+
+Deno.test("branch - creates new branch when remote doesn't have it", async () => {
+  const { remoteDir, localDir, cleanup } = await setupTestRepo();
+  const testCloneDir = `${localDir}-branch-new-test`;
+
+  try {
+    await run(["git", "clone", remoteDir, testCloneDir]);
+
+    const ctx = createMockContext({
+      host: "test.example.com",
+      defaultBranch: "main",
+    });
+
+    await model.methods.branch.execute(
+      { project: "org/repo", branch: "brand-new-branch", localPath: testCloneDir },
+      ctx,
+    );
+
+    const branchResult = await run(
+      ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+      testCloneDir,
+    );
+    assertEquals(branchResult.stdout, "brand-new-branch");
+
+    // Should NOT have any extra files (created from main)
+    const files = await run(["git", "ls-files"], testCloneDir);
+    assertEquals(files.stdout, "README.md");
+  } finally {
+    await Deno.remove(testCloneDir, { recursive: true }).catch(() => {});
+    await cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Tests: ensure - ref parameter
+// ---------------------------------------------------------------------------
+
+Deno.test("ensure - checks out specified ref after clone", async () => {
+  const { remoteDir, localDir, cleanup } = await setupTestRepo();
+  const testCloneDir = `${localDir}-ref-test`;
+
+  try {
+    // Create a branch on the remote
+    await run(["git", "checkout", "-b", "deploy-branch"], localDir);
+    await Deno.writeTextFile(`${localDir}/deploy.txt`, "deploy config\n");
+    await run(["git", "add", "-A"], localDir);
+    await run(["git", "commit", "-m", "Add deploy config"], localDir);
+    await run(["git", "push", "origin", "deploy-branch"], localDir);
+    await run(["git", "checkout", "main"], localDir);
+
+    // Clone and immediately land on the specified ref
+    await run(["git", "clone", remoteDir, testCloneDir]);
+
+    const ctx = createMockContext({
+      host: "test.example.com",
+      defaultBranch: "main",
+    });
+
+    await model.methods.ensure.execute(
+      { project: "org/repo", localPath: testCloneDir, ref: "deploy-branch" },
+      ctx,
+    );
+
+    const resource = ctx._resources.get("workspace/org--repo");
+    assertEquals(resource?.data.branch, "deploy-branch");
+
+    // Verify the branch file is present
+    const content = await Deno.readTextFile(`${testCloneDir}/deploy.txt`);
+    assertEquals(content, "deploy config\n");
+  } finally {
+    await Deno.remove(testCloneDir, { recursive: true }).catch(() => {});
+    await cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Tests: status
+// ---------------------------------------------------------------------------
+
+Deno.test("status - reports clean workspace", async () => {
+  const { cleanup, localDir } = await setupTestRepo();
+
+  try {
+    const ctx = createMockContext({
+      host: "test.example.com",
+      defaultBranch: "main",
+    });
+
+    await model.methods.status.execute(
+      { project: "org/repo", localPath: localDir },
+      ctx,
+    );
+
+    const resource = ctx._resources.get("status/org--repo");
+    assertEquals(resource?.data.clean, true);
+    assertEquals(resource?.data.modified, []);
+    assertEquals(resource?.data.untracked, []);
+    assertEquals(resource?.data.branch, "main");
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("status - reports dirty workspace with modified and untracked", async () => {
+  const { cleanup, localDir } = await setupTestRepo();
+
+  try {
+    // Modify tracked file
+    await Deno.writeTextFile(`${localDir}/README.md`, "# Modified\n");
+    // Add untracked file
+    await Deno.writeTextFile(`${localDir}/untracked.txt`, "new\n");
+
+    const ctx = createMockContext({
+      host: "test.example.com",
+      defaultBranch: "main",
+    });
+
+    await model.methods.status.execute(
+      { project: "org/repo", localPath: localDir },
+      ctx,
+    );
+
+    const resource = ctx._resources.get("status/org--repo");
+    assertEquals(resource?.data.clean, false);
+    assertEquals(resource?.data.modified.length >= 1, true);
+    assertEquals(resource?.data.untracked, ["untracked.txt"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Tests: diff
+// ---------------------------------------------------------------------------
+
+Deno.test("diff - shows working tree changes", async () => {
+  const { cleanup, localDir } = await setupTestRepo();
+
+  try {
+    // Modify a tracked file
+    await Deno.writeTextFile(`${localDir}/README.md`, "# Changed\n");
+
+    const ctx = createMockContext({
+      host: "test.example.com",
+      defaultBranch: "main",
+    });
+
+    await model.methods.diff.execute(
+      { project: "org/repo", localPath: localDir },
+      ctx,
+    );
+
+    const resource = ctx._resources.get("diff/org--repo--working-tree");
+    assertEquals(resource?.data.filesChanged, ["README.md"]);
+    assertStringIncludes(resource?.data.diff, "Changed");
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("diff - nameOnly returns only file list", async () => {
+  const { cleanup, localDir } = await setupTestRepo();
+
+  try {
+    await Deno.writeTextFile(`${localDir}/README.md`, "# NameOnly\n");
+
+    const ctx = createMockContext({
+      host: "test.example.com",
+      defaultBranch: "main",
+    });
+
+    await model.methods.diff.execute(
+      { project: "org/repo", localPath: localDir, nameOnly: true },
+      ctx,
+    );
+
+    const resource = ctx._resources.get("diff/org--repo--working-tree");
+    assertEquals(resource?.data.filesChanged, ["README.md"]);
+    // nameOnly diff output is just filenames, no patch
+    assertEquals(resource?.data.diff, "README.md");
+  } finally {
+    await cleanup();
+  }
+});

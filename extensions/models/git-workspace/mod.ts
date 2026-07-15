@@ -172,6 +172,26 @@ const PushOutputSchema = z.object({
   pushedAt: z.string(),
 });
 
+const StatusOutputSchema = z.object({
+  project: z.string(),
+  branch: z.string(),
+  commitSha: z.string(),
+  clean: z.boolean(),
+  modified: z.array(z.string()),
+  untracked: z.array(z.string()),
+  ahead: z.number(),
+  behind: z.number(),
+  checkedAt: z.string(),
+});
+
+const DiffOutputSchema = z.object({
+  project: z.string(),
+  ref: z.string(),
+  diff: z.string(),
+  filesChanged: z.array(z.string()),
+  diffAt: z.string(),
+});
+
 // ---------------------------------------------------------------------------
 // Model definition
 // ---------------------------------------------------------------------------
@@ -179,7 +199,7 @@ const PushOutputSchema = z.object({
 /** Git workspace model — local clone, branch, read, commit, push operations. */
 export const model = {
   type: "@twonines/git-workspace",
-  version: "2026.07.15.1",
+  version: "2026.07.15.2",
   description: "Local git operations — clone, branch, read, commit, push. " +
     "Workspace layout: $HOME/{host}/{group}/{project} by default. " +
     "Designed for agent-driven development workflows.",
@@ -221,12 +241,25 @@ export const model = {
       lifetime: "infinite" as const,
       garbageCollection: 10,
     },
+    status: {
+      description:
+        "Current workspace status (branch, clean/dirty, ahead/behind)",
+      schema: StatusOutputSchema,
+      lifetime: "5m" as const,
+      garbageCollection: 3,
+    },
+    diff: {
+      description: "Diff output between refs or working tree",
+      schema: DiffOutputSchema,
+      lifetime: "10m" as const,
+      garbageCollection: 5,
+    },
   },
   methods: {
     ensure: {
       description:
         "Clone the repo if it doesn't exist locally, or fetch + pull if it does. " +
-        "Leaves the workspace on the default branch at latest remote HEAD.",
+        "Leaves the workspace on the default branch (or the specified ref) at latest remote HEAD.",
       arguments: z.object({
         project: z.string().describe(
           "Project path (e.g. myorg/my-repo, team/infra-dns).",
@@ -237,12 +270,16 @@ export const model = {
         protocol: z.enum(["ssh", "https"]).optional().describe(
           "Override the global clone protocol for this project.",
         ),
+        ref: z.string().optional().describe(
+          "Checkout this branch/tag after clone or fetch instead of the default branch.",
+        ),
       }),
       execute: async (
         args: {
           project: string;
           localPath?: string;
           protocol?: "ssh" | "https";
+          ref?: string;
         },
         context: Ctx,
       ) => {
@@ -312,6 +349,18 @@ export const model = {
           }
         }
 
+        // If a specific ref was requested, switch to it
+        if (args.ref) {
+          const refCheckout = await git(["checkout", args.ref], localPath);
+          if (refCheckout.code !== 0) {
+            throw new Error(
+              `Failed to checkout ref '${args.ref}': ${refCheckout.stderr}`,
+            );
+          }
+          // Pull if tracking a remote branch (ignore failure for tags/detached)
+          await git(["pull", "--ff-only", "origin", args.ref], localPath);
+        }
+
         const sha = await git(["rev-parse", "HEAD"], localPath);
         const branch = await git(
           ["rev-parse", "--abbrev-ref", "HEAD"],
@@ -343,11 +392,13 @@ export const model = {
     },
 
     branch: {
-      description: "Create a new branch from the latest default branch HEAD.",
+      description:
+        "Switch to a branch. If it exists on the remote, tracks it. " +
+        "If not, creates a new branch from the latest default branch HEAD.",
       arguments: z.object({
         project: z.string().describe("Project path."),
         branch: z.string().describe(
-          "Branch name to create (e.g. feat/add-txt-record).",
+          "Branch name to switch to or create (e.g. feat/add-txt-record).",
         ),
         localPath: z.string().optional().describe(
           "Override the computed local path.",
@@ -365,43 +416,61 @@ export const model = {
         );
 
         context.logger.info(
-          "Creating branch {branch} from {base} in {project}",
+          "Switching to branch {branch} in {project}",
           {
             branch: args.branch,
-            base: "auto-detected default",
             project: args.project,
           },
         );
 
-        // Auto-detect default branch
-        const defaultBranch = await detectDefaultBranch(
-          localPath,
-          ga.defaultBranch || "main",
-        );
+        // Fetch latest to ensure we see remote branches
+        await git(["fetch", "origin"], localPath);
 
-        await git(["checkout", defaultBranch], localPath);
-        await git(["pull", "--ff-only", "origin", defaultBranch], localPath);
+        // Try checking out the branch — git will auto-track remote if it exists
+        const checkout = await git(["checkout", args.branch], localPath);
 
-        const create = await git(["checkout", "-b", args.branch], localPath);
-        if (create.code !== 0) {
-          const switchBranch = await git(["checkout", args.branch], localPath);
-          if (switchBranch.code !== 0) {
+        let baseBranch: string;
+
+        if (checkout.code === 0) {
+          // Successfully checked out — pull if it has a remote tracking branch
+          await git(
+            ["pull", "--ff-only", "origin", args.branch],
+            localPath,
+          );
+          // pull may fail if no upstream set (new local branch) — that's fine
+          baseBranch = args.branch;
+        } else {
+          // Branch doesn't exist locally or remotely — create from default
+          const defaultBranch = await detectDefaultBranch(
+            localPath,
+            ga.defaultBranch || "main",
+          );
+
+          await git(["checkout", defaultBranch], localPath);
+          await git(
+            ["pull", "--ff-only", "origin", defaultBranch],
+            localPath,
+          );
+
+          const create = await git(
+            ["checkout", "-b", args.branch],
+            localPath,
+          );
+          if (create.code !== 0) {
             throw new Error(
-              `Failed to create/switch branch: ${create.stderr} / ${switchBranch.stderr}`,
+              `Failed to create branch ${args.branch}: ${create.stderr}`,
             );
           }
+          baseBranch = defaultBranch;
         }
 
-        const baseSha = await git(
-          ["rev-parse", `origin/${defaultBranch}`],
-          localPath,
-        );
+        const baseSha = await git(["rev-parse", "HEAD"], localPath);
 
         const result = {
           localPath,
           project: args.project,
           branch: args.branch,
-          baseBranch: defaultBranch,
+          baseBranch,
           baseSha: baseSha.stdout,
           createdAt: new Date().toISOString(),
         };
@@ -679,6 +748,154 @@ export const model = {
           `${args.project}--${branch.stdout}`.replace(/\//g, "--"),
           result,
         );
+        return { dataHandles: [] };
+      },
+    },
+
+    status: {
+      description:
+        "Show workspace status: current branch, clean/dirty, modified files, ahead/behind remote.",
+      arguments: z.object({
+        project: z.string().describe("Project path."),
+        localPath: z.string().optional().describe(
+          "Override the computed local workspace path.",
+        ),
+      }),
+      execute: async (
+        args: { project: string; localPath?: string },
+        context: Ctx,
+      ) => {
+        const ga = context.globalArgs;
+        const localPath = resolveWorkspacePath(
+          ga,
+          args.project,
+          args.localPath,
+        );
+
+        const branchResult = await git(
+          ["rev-parse", "--abbrev-ref", "HEAD"],
+          localPath,
+        );
+        if (branchResult.code !== 0) {
+          throw new Error(
+            `Cannot determine branch: ${branchResult.stderr}. Run ensure first.`,
+          );
+        }
+
+        const sha = await git(["rev-parse", "HEAD"], localPath);
+        const porcelain = await git(["status", "--porcelain"], localPath);
+
+        const lines = porcelain.stdout
+          .split("\n")
+          .filter((l) => l.length > 0);
+        const modified = lines
+          .filter((l) => !l.startsWith("??"))
+          .map((l) => l.slice(3));
+        const untracked = lines
+          .filter((l) => l.startsWith("??"))
+          .map((l) => l.slice(3));
+
+        // ahead/behind
+        let ahead = 0;
+        let behind = 0;
+        const revList = await git(
+          [
+            "rev-list",
+            "--left-right",
+            "--count",
+            `HEAD...origin/${branchResult.stdout}`,
+          ],
+          localPath,
+        );
+        if (revList.code === 0 && revList.stdout) {
+          const parts = revList.stdout.split(/\s+/);
+          ahead = parseInt(parts[0] || "0", 10);
+          behind = parseInt(parts[1] || "0", 10);
+        }
+
+        const result = {
+          project: args.project,
+          branch: branchResult.stdout,
+          commitSha: sha.stdout,
+          clean: lines.length === 0,
+          modified,
+          untracked,
+          ahead,
+          behind,
+          checkedAt: new Date().toISOString(),
+        };
+
+        await context.writeResource(
+          "status",
+          args.project.replace(/\//g, "--"),
+          result,
+        );
+        return { dataHandles: [] };
+      },
+    },
+
+    diff: {
+      description:
+        "Show diff output. Defaults to working tree diff; provide a ref to diff against (e.g. origin/main, HEAD~3).",
+      arguments: z.object({
+        project: z.string().describe("Project path."),
+        ref: z.string().optional().describe(
+          "Ref to diff against (e.g. origin/main, HEAD~1). Default: working tree diff.",
+        ),
+        nameOnly: z.boolean().optional().describe(
+          "Only list changed file names, no patch content. Default: false.",
+        ),
+        localPath: z.string().optional().describe(
+          "Override the computed local workspace path.",
+        ),
+      }),
+      execute: async (
+        args: {
+          project: string;
+          ref?: string;
+          nameOnly?: boolean;
+          localPath?: string;
+        },
+        context: Ctx,
+      ) => {
+        const ga = context.globalArgs;
+        const localPath = resolveWorkspacePath(
+          ga,
+          args.project,
+          args.localPath,
+        );
+
+        const diffArgs = ["diff"];
+        if (args.nameOnly) diffArgs.push("--name-only");
+        if (args.ref) diffArgs.push(args.ref);
+
+        const diffResult = await git(diffArgs, localPath);
+        if (diffResult.code !== 0) {
+          throw new Error(`git diff failed: ${diffResult.stderr}`);
+        }
+
+        // Get list of changed files
+        const nameOnlyArgs = ["diff", "--name-only"];
+        if (args.ref) nameOnlyArgs.push(args.ref);
+        const namesResult = await git(nameOnlyArgs, localPath);
+        const filesChanged = namesResult.stdout
+          .split("\n")
+          .filter((f) => f.length > 0);
+
+        const result = {
+          project: args.project,
+          ref: args.ref || "working-tree",
+          diff: diffResult.stdout,
+          filesChanged,
+          diffAt: new Date().toISOString(),
+        };
+
+        const instanceName = `${args.project}--${args.ref || "working-tree"}`
+          .replace(
+            /\//g,
+            "--",
+          );
+        await context.writeResource("diff", instanceName, result);
         return { dataHandles: [] };
       },
     },
