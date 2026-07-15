@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@twonines/git-workspace"
-version: "2026.07.15.1"
+version: "2026.07.15.2"
 description: >
   Local git operations model — clone, branch, read, commit, push. Designed for
   agent-driven development workflows where code changes are authored locally and
