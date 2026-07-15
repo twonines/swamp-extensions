@@ -199,7 +199,7 @@ const DiffOutputSchema = z.object({
 /** Git workspace model — local clone, branch, read, commit, push operations. */
 export const model = {
   type: "@twonines/git-workspace",
-  version: "2026.07.15.2",
+  version: "2026.07.15.3",
   description: "Local git operations — clone, branch, read, commit, push. " +
     "Workspace layout: $HOME/{host}/{group}/{project} by default. " +
     "Designed for agent-driven development workflows.",
@@ -600,12 +600,16 @@ export const model = {
     commit: {
       description:
         "Stage files and commit. Message should follow commitFormat if set. " +
-        "Default: leading-verb imperative, ≤50 char title, body explains why.",
+        "Default: leading-verb imperative, ≤50 char title, body explains why. " +
+        "Use amend to rewrite the last commit (message and/or staged changes).",
       arguments: z.object({
         project: z.string().describe("Project path."),
         message: z.string().describe("Commit message."),
         files: z.array(z.string()).optional().describe(
           "Files to stage (relative to repo root). Omit to stage all changes.",
+        ),
+        amend: z.boolean().optional().describe(
+          "Amend the last commit instead of creating a new one. Default: false.",
         ),
         localPath: z.string().optional().describe(
           "Override the computed local workspace path.",
@@ -616,6 +620,7 @@ export const model = {
           project: string;
           message: string;
           files?: string[];
+          amend?: boolean;
           localPath?: string;
         },
         context: Ctx,
@@ -627,10 +632,15 @@ export const model = {
           args.localPath,
         );
 
-        context.logger.info("Committing to {project}: {message}", {
-          project: args.project,
-          message: args.message.split("\n")[0],
-        });
+        context.logger.info(
+          args.amend
+            ? "Amending commit in {project}: {message}"
+            : "Committing to {project}: {message}",
+          {
+            project: args.project,
+            message: args.message.split("\n")[0],
+          },
+        );
 
         if (args.files && args.files.length > 0) {
           const add = await git(["add", ...args.files], localPath);
@@ -644,15 +654,17 @@ export const model = {
           }
         }
 
-        const status = await git(["status", "--porcelain"], localPath);
-        if (!status.stdout) {
-          throw new Error("Nothing to commit — working tree clean.");
+        if (!args.amend) {
+          const status = await git(["status", "--porcelain"], localPath);
+          if (!status.stdout) {
+            throw new Error("Nothing to commit — working tree clean.");
+          }
         }
 
-        const commitResult = await git(
-          ["commit", "-m", args.message],
-          localPath,
-        );
+        const commitArgs = ["commit", "-m", args.message];
+        if (args.amend) commitArgs.push("--amend");
+
+        const commitResult = await git(commitArgs, localPath);
         if (commitResult.code !== 0) {
           throw new Error(`git commit failed: ${commitResult.stderr}`);
         }
