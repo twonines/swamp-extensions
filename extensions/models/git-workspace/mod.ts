@@ -59,8 +59,15 @@ function resolveWorkspacePath(
   return `${base}/${host}/${projectPath}`;
 }
 
-function cloneUrl(host: string, projectPath: string): string {
+function cloneUrl(
+  host: string,
+  projectPath: string,
+  protocol: "ssh" | "https" = "ssh",
+): string {
   const h = host.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  if (protocol === "https") {
+    return `https://${h}/${projectPath}.git`;
+  }
   return `git@${h}:${projectPath}.git`;
 }
 
@@ -108,6 +115,9 @@ const GlobalArgsSchema = z.object({
   ),
   commitFormat: z.string().optional().describe(
     "Commit message format hint for the agent. Example: 'leading-verb, 50 char title, blank line, body explains why'.",
+  ),
+  protocol: z.enum(["ssh", "https"]).optional().describe(
+    "Clone protocol. 'ssh' (default) uses git@host:project.git; 'https' uses https://host/project.git.",
   ),
 });
 
@@ -169,7 +179,7 @@ const PushOutputSchema = z.object({
 /** Git workspace model — local clone, branch, read, commit, push operations. */
 export const model = {
   type: "@twonines/git-workspace",
-  version: "2026.07.14.3",
+  version: "2026.07.15.1",
   description: "Local git operations — clone, branch, read, commit, push. " +
     "Workspace layout: $HOME/{host}/{group}/{project} by default. " +
     "Designed for agent-driven development workflows.",
@@ -224,9 +234,16 @@ export const model = {
         localPath: z.string().optional().describe(
           "Override the computed local path.",
         ),
+        protocol: z.enum(["ssh", "https"]).optional().describe(
+          "Override the global clone protocol for this project.",
+        ),
       }),
       execute: async (
-        args: { project: string; localPath?: string },
+        args: {
+          project: string;
+          localPath?: string;
+          protocol?: "ssh" | "https";
+        },
         context: Ctx,
       ) => {
         const ga = context.globalArgs;
@@ -235,7 +252,8 @@ export const model = {
           args.project,
           args.localPath,
         );
-        const url = cloneUrl(ga.host, args.project);
+        const proto = args.protocol || ga.protocol || "ssh";
+        const url = cloneUrl(ga.host, args.project, proto);
 
         context.logger.info("Ensuring workspace for {project} at {path}", {
           project: args.project,
