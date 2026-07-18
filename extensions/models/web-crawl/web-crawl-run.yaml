@@ -1,0 +1,56 @@
+id: 7c3e8f1a-4d2b-4e9f-b8a1-f3c2d5e6a7b9
+name: "@twonines/web-crawl-run"
+description: |
+  Complete web crawl pipeline: harvest fresh articles from configured
+  sources, then evaluate them (agent-driven assessment), then generate
+  the curated HTML report.
+
+  The evaluate step requires an AI agent to run — it reads the harvested
+  candidates, fetches their content, and produces opinionated assessments.
+  This workflow is intended to be triggered by an agent session or
+  scheduled with agent involvement.
+version: 1
+tags:
+  extension: "@twonines/web-crawl"
+inputs:
+  properties:
+    maxArticles:
+      type: number
+      description: Maximum articles to harvest across all sources.
+      default: 50
+    maxEvaluate:
+      type: number
+      description: Maximum articles to evaluate (top candidates by source signal).
+      default: 20
+  required: []
+jobs:
+  - name: harvest
+    description: Fetch fresh article candidates from all configured sources.
+    steps:
+      - name: fetch-articles
+        description: >
+          Run the harvester to pull from HN, Lobsters, and RSS feeds.
+          Instance 'web-crawl-harvester' must be pre-created with
+          globalArguments.sources configured.
+        task:
+          type: model_method
+          modelIdOrName: web-crawl-harvester
+          methodName: harvest
+          inputs:
+            maxTotal: "${{ inputs.maxArticles }}"
+  - name: evaluate
+    description: Read and assess harvested articles.
+    dependsOn:
+      - job: harvest
+        condition:
+          type: succeeded
+    steps:
+      - name: assess-articles
+        description: >
+          Agent evaluates the harvested candidates and produces
+          scored assessments. Instance 'web-crawl-evaluator' must
+          be pre-created.
+        task:
+          type: model_method
+          modelIdOrName: web-crawl-evaluator
+          methodName: evaluate

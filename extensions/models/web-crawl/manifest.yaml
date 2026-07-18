@@ -1,0 +1,35 @@
+manifestVersion: 1
+name: "@twonines/web-crawl"
+version: "2026.07.18.1"
+description: >
+  Automated web reading pipeline — harvests articles from configurable sources
+  (Hacker News, Lobsters, RSS/Atom feeds), evaluates them with an AI agent,
+  learns user interest over time via feedback, and produces a curated HTML
+  report with ranked recommendations. Designed for agent-driven reading
+  workflows where an AI reads on the user's behalf and surfaces what matters.
+repository: "https://codeberg.org/twonines/swamp-extensions"
+paths:
+  base: manifest
+models:
+  - harvester.ts
+  - evaluator.ts
+workflows:
+  - web-crawl-run.yaml
+vaults: []
+drivers: []
+datastores: []
+reports:
+  - report.ts
+additionalFiles:
+  - README.md
+  - LICENSE.md
+  - PROMPT.md
+labels:
+  - web
+  - crawl
+  - rss
+  - reading
+  - curation
+  - report
+  - ai
+dependencies: []
