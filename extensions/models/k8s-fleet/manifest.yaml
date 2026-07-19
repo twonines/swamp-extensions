@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@twonines/k8s-fleet"
-version: "2026.07.19.1"
+version: "2026.07.19.2"
 description: >
   Fleet-wide Kubernetes health across all kubeconfig contexts. Iterates every
   cluster in ~/.kube/config (or a specified subset) and produces per-cluster
