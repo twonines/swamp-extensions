@@ -296,7 +296,7 @@ function sanitizeInstanceName(name: string): string {
  */
 export const model = {
   type: "@twonines/k8s-fleet",
-  version: "2026.07.19.1",
+  version: "2026.07.19.2",
   description:
     "Fleet-wide Kubernetes health — iterates all kubeconfig contexts and " +
     "produces per-cluster health snapshots plus an aggregated fleet summary. " +
@@ -422,7 +422,6 @@ export const model = {
 
         const handles = [];
         for (const { ctx, result } of probeResults) {
-
           const data: Record<string, unknown> = {
             context: ctx.name,
             server: ctx.server,
@@ -522,7 +521,6 @@ export const model = {
         }
 
         for (const { ctx, result } of probeResults) {
-
           if (!result.reachable) {
             unreachableClusters.push(ctx.name);
             continue;
