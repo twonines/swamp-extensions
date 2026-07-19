@@ -137,15 +137,17 @@ function loadContexts(globalArgs: z.infer<typeof GlobalArgsSchema>): {
 }
 
 function buildClientForContext(
-  kc: k8s.KubeConfig,
+  globalArgs: z.infer<typeof GlobalArgsSchema>,
   contextName: string,
 ): { coreApi: k8s.CoreV1Api } {
-  // Clone to avoid mutating the shared instance
-  const kcClone = new k8s.KubeConfig();
-  kcClone.loadFromString(JSON.stringify(kc.exportConfig()));
-  kcClone.setCurrentContext(contextName);
-
-  const coreApi = kcClone.makeApiClient(k8s.CoreV1Api);
+  const kc = new k8s.KubeConfig();
+  if (globalArgs.kubeconfig) {
+    kc.loadFromFile(globalArgs.kubeconfig);
+  } else {
+    kc.loadFromDefault();
+  }
+  kc.setCurrentContext(contextName);
+  const coreApi = kc.makeApiClient(k8s.CoreV1Api);
   return { coreApi };
 }
 
@@ -226,7 +228,7 @@ function summarizePods(pods: k8s.V1Pod[]): PodSummary {
 }
 
 async function probeCluster(
-  kc: k8s.KubeConfig,
+  globalArgs: z.infer<typeof GlobalArgsSchema>,
   contextName: string,
   timeoutMs: number,
 ): Promise<{
@@ -236,7 +238,7 @@ async function probeCluster(
   pods?: PodSummary;
 }> {
   try {
-    const { coreApi } = buildClientForContext(kc, contextName);
+    const { coreApi } = buildClientForContext(globalArgs, contextName);
 
     // Use AbortController for timeout
     const controller = new AbortController();
@@ -329,27 +331,42 @@ export const model = {
       arguments: z.object({}),
       execute: async (_args: Record<string, never>, context: Ctx) => {
         const ga = context.globalArgs;
-        const { kc, contexts } = loadContexts(ga);
+        const { contexts } = loadContexts(ga);
 
         context.logger.info("Probing {count} contexts", {
           count: contexts.length,
         });
 
-        const handles = [];
-        for (const ctx of contexts) {
-          // Quick version probe — just try to list nodes with a short timeout
-          let reachable = true;
-          let error: string | undefined;
-          try {
-            const { coreApi } = buildClientForContext(kc, ctx.name);
-            await coreApi.listNode({
-              timeoutSeconds: Math.min(5, ga.timeout || 10),
-            });
-          } catch (err) {
-            reachable = false;
-            error = err instanceof Error ? err.message : String(err);
-          }
+        // Probe contexts in parallel (batched)
+        const batchSize = 10;
+        const probeResults: Array<{
+          ctx: KubeContext;
+          reachable: boolean;
+          error: string | undefined;
+        }> = [];
+        for (let i = 0; i < contexts.length; i += batchSize) {
+          const batch = contexts.slice(i, i + batchSize);
+          const batchResults = await Promise.all(
+            batch.map(async (ctx) => {
+              let reachable = true;
+              let error: string | undefined;
+              try {
+                const { coreApi } = buildClientForContext(ga, ctx.name);
+                await coreApi.listNode({
+                  timeoutSeconds: Math.min(5, ga.timeout || 10),
+                });
+              } catch (err) {
+                reachable = false;
+                error = err instanceof Error ? err.message : String(err);
+              }
+              return { ctx, reachable, error };
+            }),
+          );
+          probeResults.push(...batchResults);
+        }
 
+        const handles = [];
+        for (const { ctx, reachable, error } of probeResults) {
           const data = {
             ...ctx,
             reachable,
@@ -376,7 +393,7 @@ export const model = {
       arguments: z.object({}),
       execute: async (_args: Record<string, never>, context: Ctx) => {
         const ga = context.globalArgs;
-        const { kc, contexts } = loadContexts(ga);
+        const { contexts } = loadContexts(ga);
         const timeoutMs = (ga.timeout || 10) * 1000;
 
         context.logger.info(
@@ -386,9 +403,25 @@ export const model = {
           },
         );
 
+        // Probe all contexts in parallel (batched)
+        const batchSize = 10;
+        const probeResults: Array<{
+          ctx: KubeContext;
+          result: Awaited<ReturnType<typeof probeCluster>>;
+        }> = [];
+        for (let i = 0; i < contexts.length; i += batchSize) {
+          const batch = contexts.slice(i, i + batchSize);
+          const batchResults = await Promise.all(
+            batch.map(async (ctx) => ({
+              ctx,
+              result: await probeCluster(ga, ctx.name, timeoutMs),
+            })),
+          );
+          probeResults.push(...batchResults);
+        }
+
         const handles = [];
-        for (const ctx of contexts) {
-          const result = await probeCluster(kc, ctx.name, timeoutMs);
+        for (const { ctx, result } of probeResults) {
 
           const data: Record<string, unknown> = {
             context: ctx.name,
@@ -450,7 +483,7 @@ export const model = {
       arguments: z.object({}),
       execute: async (_args: Record<string, never>, context: Ctx) => {
         const ga = context.globalArgs;
-        const { kc, contexts } = loadContexts(ga);
+        const { contexts } = loadContexts(ga);
         const timeoutMs = (ga.timeout || 10) * 1000;
 
         context.logger.info(
@@ -471,8 +504,24 @@ export const model = {
         const unreachableClusters: string[] = [];
         let reachableCount = 0;
 
-        for (const ctx of contexts) {
-          const result = await probeCluster(kc, ctx.name, timeoutMs);
+        // Probe all contexts in parallel (batched to avoid overwhelming STS)
+        const batchSize = 10;
+        const probeResults: Array<{
+          ctx: KubeContext;
+          result: Awaited<ReturnType<typeof probeCluster>>;
+        }> = [];
+        for (let i = 0; i < contexts.length; i += batchSize) {
+          const batch = contexts.slice(i, i + batchSize);
+          const batchResults = await Promise.all(
+            batch.map(async (ctx) => ({
+              ctx,
+              result: await probeCluster(ga, ctx.name, timeoutMs),
+            })),
+          );
+          probeResults.push(...batchResults);
+        }
+
+        for (const { ctx, result } of probeResults) {
 
           if (!result.reachable) {
             unreachableClusters.push(ctx.name);
