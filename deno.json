@@ -1,6 +1,7 @@
 {
   "imports": {
     "zod": "npm:zod@4",
+    "@std/assert": "jsr:@std/assert@1",
     "@systeminit/swamp-testing": "jsr:@systeminit/swamp-testing",
     "@aws-sdk/client-rds": "npm:@aws-sdk/client-rds@3.1024.0",
     "@aws-sdk/client-ec2": "npm:@aws-sdk/client-ec2@3.1024.0",
@@ -8,6 +9,7 @@
     "@aws-sdk/client-sts": "npm:@aws-sdk/client-sts@3.1024.0",
     "@aws-sdk/client-secrets-manager": "npm:@aws-sdk/client-secrets-manager@3.1024.0",
     "@aws-sdk/rds-signer": "npm:@aws-sdk/rds-signer@3.1024.0",
+    "@kubernetes/client-node": "npm:@kubernetes/client-node@1.0.0",
     "postgres": "npm:postgres@3.4.5"
   }
 }
