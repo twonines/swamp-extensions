@@ -1,0 +1,29 @@
+manifestVersion: 1
+name: "@twonines/k8s-fleet"
+version: "2026.07.19.1"
+description: >
+  Fleet-wide Kubernetes health across all kubeconfig contexts. Iterates every
+  cluster in ~/.kube/config (or a specified subset) and produces per-cluster
+  health snapshots plus an aggregated fleet summary. Best-effort — unreachable
+  clusters are reported, not fatal.
+repository: "https://codeberg.org/twonines/swamp-extensions"
+paths:
+  base: manifest
+models:
+  - mod.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+additionalFiles:
+  - README.md
+  - LICENSE.md
+labels:
+  - kubernetes
+  - k8s
+  - fleet
+  - multi-cluster
+  - health
+  - kubeconfig
+dependencies: []
