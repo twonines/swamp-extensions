@@ -172,6 +172,13 @@ const PushOutputSchema = z.object({
   pushedAt: z.string(),
 });
 
+const RmOutputSchema = z.object({
+  project: z.string(),
+  files: z.array(z.string()),
+  count: z.number(),
+  removedAt: z.string(),
+});
+
 const StatusOutputSchema = z.object({
   project: z.string(),
   branch: z.string(),
@@ -199,7 +206,7 @@ const DiffOutputSchema = z.object({
 /** Git workspace model — local clone, branch, read, commit, push operations. */
 export const model = {
   type: "@twonines/git-workspace",
-  version: "2026.07.15.3",
+  version: "2026.07.20.1",
   description: "Local git operations — clone, branch, read, commit, push. " +
     "Workspace layout: $HOME/{host}/{group}/{project} by default. " +
     "Designed for agent-driven development workflows.",
@@ -240,6 +247,12 @@ export const model = {
       schema: PushOutputSchema,
       lifetime: "infinite" as const,
       garbageCollection: 10,
+    },
+    rm: {
+      description: "Result of staged file removals",
+      schema: RmOutputSchema,
+      lifetime: "30m" as const,
+      garbageCollection: 5,
     },
     status: {
       description:
@@ -764,6 +777,58 @@ export const model = {
       },
     },
 
+    rm: {
+      description:
+        "Stage file deletions via git rm. Files are removed from the working " +
+        "tree and staged for the next commit. Call commit afterwards to finalize.",
+      arguments: z.object({
+        project: z.string().describe("Project path."),
+        files: z.array(z.string()).describe(
+          "Files to remove (relative to repo root).",
+        ),
+        localPath: z.string().optional().describe(
+          "Override the computed local workspace path.",
+        ),
+      }),
+      execute: async (
+        args: { project: string; files: string[]; localPath?: string },
+        context: Ctx,
+      ) => {
+        const ga = context.globalArgs;
+        const localPath = resolveWorkspacePath(
+          ga,
+          args.project,
+          args.localPath,
+        );
+
+        context.logger.info("Removing {count} files from {project}", {
+          count: args.files.length,
+          project: args.project,
+        });
+
+        const rmResult = await git(
+          ["rm", "-r", "--", ...args.files],
+          localPath,
+        );
+        if (rmResult.code !== 0) {
+          throw new Error(`git rm failed: ${rmResult.stderr}`);
+        }
+
+        const result = {
+          project: args.project,
+          files: args.files,
+          count: args.files.length,
+          removedAt: new Date().toISOString(),
+        };
+
+        await context.writeResource(
+          "rm",
+          args.project.replace(/\//g, "--"),
+          result,
+        );
+        return { dataHandles: [] };
+      },
+    },
     status: {
       description:
         "Show workspace status: current branch, clean/dirty, modified files, ahead/behind remote.",
