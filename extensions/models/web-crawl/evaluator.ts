@@ -153,7 +153,7 @@ function extractReadableText(html: string): string {
  */
 export const model = {
   type: "@twonines/web-crawl/evaluator",
-  version: "2026.07.18.1",
+  version: "2026.07.20.1",
 
   globalArguments: z.object({
     harvesterModelId: z.string().default("").describe(
@@ -183,6 +183,15 @@ export const model = {
       schema: PreferencesSchema,
       lifetime: "infinite" as const,
       garbageCollection: 5,
+    },
+  },
+
+  files: {
+    report: {
+      description: "HTML reading list report.",
+      contentType: "text/html",
+      lifetime: "30d" as const,
+      garbageCollection: 10,
     },
   },
 
@@ -415,27 +424,45 @@ export const model = {
       ) {
         const logger = context.logger;
 
-        // Read the most recent assessments
+        // Read assessments — by specific runId or find the most recent
         let data: any = null;
         if (args.runId) {
           try {
-            data = await context.readResource?.("assessments", args.runId);
+            data = await context.readResource?.(args.runId);
           } catch {
             logger.warn("Could not read assessments for runId {runId}", {
               runId: args.runId,
             });
           }
         }
-        // If no specific run or read failed, try to find the latest
+        // If no specific run or read failed, find the latest by listing
         if (!data) {
           try {
-            data = await context.readLatestResource?.("assessments");
-          } catch {
-            // fall through
+            const allData = await context.dataRepository?.findAllForModel(
+              context.modelType,
+              context.modelId,
+            );
+            if (allData && allData.length > 0) {
+              // Filter to assessment instances (they start with "eval-")
+              const assessmentData = allData
+                .filter((d: any) => d.name?.startsWith("eval-"))
+                .sort((a: any, b: any) =>
+                  (b.createdAt || "").localeCompare(a.createdAt || "")
+                );
+              if (assessmentData.length > 0) {
+                const latest = assessmentData[0].name;
+                data = await context.readResource?.(latest);
+              }
+            }
+          } catch (err) {
+            logger.warn("Could not list resources: {error}", {
+              error: (err as Error).message,
+            });
           }
         }
 
         if (!data?.assessments || data.assessments.length === 0) {
+          logger.warn("No assessments found to report on");
           return {
             content: {
               html: null,
@@ -468,17 +495,23 @@ export const model = {
 
         const html = renderReportHTML(args.title, dateStr, recommended, rest);
 
-        // Write as file artifact
-        if (context.writeFile) {
-          await context.writeFile("report", "reading-list.html", html);
-        }
+        // Write as file artifact using createFileWriter
+        const writer = context.createFileWriter("report", "reading-list");
+        const handle = await writer.writeText(html);
 
         // Also write to local path if specified
         if (args.outputPath) {
-          await Deno.writeTextFile(args.outputPath, html);
-          logger.info("Wrote HTML report to {path}", {
-            path: args.outputPath,
-          });
+          try {
+            await Deno.writeTextFile(args.outputPath, html);
+            logger.info("Wrote HTML report to {path}", {
+              path: args.outputPath,
+            });
+          } catch (err) {
+            logger.warn("Could not write to local path {path}: {error}", {
+              path: args.outputPath,
+              error: (err as Error).message,
+            });
+          }
         }
 
         logger.info(
@@ -487,6 +520,7 @@ export const model = {
         );
 
         return {
+          dataHandles: [handle],
           content: {
             recommended: recommended.length,
             total: assessments.length,

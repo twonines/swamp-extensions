@@ -288,7 +288,7 @@ function hashString(s: string): string {
  */
 export const model = {
   type: "@twonines/web-crawl/harvester",
-  version: "2026.07.18.1",
+  version: "2026.07.20.1",
 
   globalArguments: z.object({
     sources: z.array(SourceSchema).describe(

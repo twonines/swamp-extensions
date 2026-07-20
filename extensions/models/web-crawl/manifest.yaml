@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@twonines/web-crawl"
-version: "2026.07.18.1"
+version: "2026.07.20.1"
 description: >
   Automated web reading pipeline — harvests articles from configurable sources
   (Hacker News, Lobsters, RSS/Atom feeds), evaluates them with an AI agent,
