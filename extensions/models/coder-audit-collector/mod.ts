@@ -1,6 +1,7 @@
 // ABOUTME: Pages through the Coder audit log API collecting events incrementally.
 // ABOUTME: Writes batches of audit events as versioned data for analysis.
-import { z } from "zod";
+// deno-lint-ignore-file no-import-prefix
+import { z } from "npm:zod@4";
 
 const GlobalArgsSchema = z.object({
   url: z.string().url().default("http://localhost:3000"),
@@ -32,7 +33,7 @@ const AuditBatchSchema = z.object({
 /** Model definition for collecting Coder audit log entries. */
 export const model = {
   type: "@twonines/coder-audit-collector",
-  version: "2026.05.31.1",
+  version: "2026.07.20.1",
   description:
     "Pages through the Coder audit log API and writes events as versioned data for analysis.",
   globalArguments: GlobalArgsSchema,

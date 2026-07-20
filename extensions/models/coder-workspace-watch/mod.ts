@@ -1,6 +1,7 @@
 // ABOUTME: Queries the Coder workspace API and captures state snapshots.
 // ABOUTME: Records workspace status for stability and drift analysis.
-import { z } from "zod";
+// deno-lint-ignore-file no-import-prefix
+import { z } from "npm:zod@4";
 
 const GlobalArgsSchema = z.object({
   url: z.string().url().default("http://localhost:3000"),
@@ -27,7 +28,7 @@ const WorkspaceSnapshotSchema = z.object({
 /** Model definition for observing Coder workspace state. */
 export const model = {
   type: "@twonines/coder-workspace-watch",
-  version: "2026.05.31.1",
+  version: "2026.07.20.1",
   description:
     "Observes Coder workspace state via the API and records typed snapshots for stability analysis.",
   globalArguments: GlobalArgsSchema,

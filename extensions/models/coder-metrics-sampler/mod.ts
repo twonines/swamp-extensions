@@ -1,6 +1,7 @@
 // ABOUTME: Scrapes Prometheus metrics from Coder's metrics endpoint.
 // ABOUTME: Extracts key operational metrics and writes typed snapshots for trend analysis.
-import { z } from "zod";
+// deno-lint-ignore-file no-import-prefix
+import { z } from "npm:zod@4";
 
 const GlobalArgsSchema = z.object({
   metricsUrl: z.string().url().default("http://localhost:2112/metrics"),
@@ -68,7 +69,7 @@ function findHistogramQuantile(
 /** Model definition for sampling Coder Prometheus metrics. */
 export const model = {
   type: "@twonines/coder-metrics-sampler",
-  version: "2026.05.31.1",
+  version: "2026.07.20.1",
   description:
     "Scrapes Prometheus metrics from Coder and writes typed metric snapshots for trend analysis.",
   globalArguments: GlobalArgsSchema,

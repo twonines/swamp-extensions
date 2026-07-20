@@ -1,6 +1,7 @@
 // ABOUTME: Polls Coder server health and build info endpoints.
 // ABOUTME: Produces typed, versioned health state for reliability analysis.
-import { z } from "zod";
+// deno-lint-ignore-file no-import-prefix
+import { z } from "npm:zod@4";
 
 const GlobalArgsSchema = z.object({
   url: z.string().url().default("http://localhost:3000"),
@@ -47,7 +48,7 @@ async function timedFetch(
 /** Model definition for probing Coder server health. */
 export const model = {
   type: "@twonines/coder-health-probe",
-  version: "2026.05.31.1",
+  version: "2026.07.20.1",
   description:
     "Polls Coder server health and build info endpoints. Produces typed health state for reliability analysis.",
   globalArguments: GlobalArgsSchema,

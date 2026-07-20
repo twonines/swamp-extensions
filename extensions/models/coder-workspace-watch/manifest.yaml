@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@twonines/coder-workspace-watch"
-version: "2026.05.31.2"
+version: "2026.07.20.1"
 description: >
   Queries Coder workspace API and captures state snapshots. Records workspace
   status, agent state, and build info for stability and drift analysis.

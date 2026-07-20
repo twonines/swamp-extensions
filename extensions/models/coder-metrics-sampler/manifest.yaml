@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@twonines/coder-metrics-sampler"
-version: "2026.05.31.2"
+version: "2026.07.20.1"
 description: >
   Scrapes Prometheus metrics from Coder's metrics endpoint. Extracts key
   operational indicators (API latency, workspace counts, agent connections)

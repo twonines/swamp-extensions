@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@twonines/coder-audit-collector"
-version: "2026.05.31.2"
+version: "2026.07.20.1"
 description: >
   Pages through the Coder audit log API and writes events as versioned data.
   Supports incremental collection with configurable limits and query filters.

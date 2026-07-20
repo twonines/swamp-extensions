@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@twonines/coder-health-probe"
-version: "2026.05.31.2"
+version: "2026.07.20.1"
 description: >
   Polls Coder server health and build info endpoints. Produces typed health
   state with latency measurements for reliability analysis.

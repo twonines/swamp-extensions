@@ -1,6 +1,7 @@
 // ABOUTME: Records webhook payloads received from Coder notifications.
 // ABOUTME: Stores events with receipt timestamp for delivery latency analysis.
-import { z } from "zod";
+// deno-lint-ignore-file no-import-prefix
+import { z } from "npm:zod@4";
 
 const GlobalArgsSchema = z.object({});
 
@@ -21,7 +22,7 @@ const WebhookEventSchema = z.object({
 /** Model definition for recording Coder webhook notification events. */
 export const model = {
   type: "@twonines/coder-event-log",
-  version: "2026.05.31.1",
+  version: "2026.07.20.1",
   description:
     "Records webhook payloads from Coder notifications for delivery and latency analysis.",
   globalArguments: GlobalArgsSchema,

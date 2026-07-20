@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@twonines/coder-event-log"
-version: "2026.05.31.2"
+version: "2026.07.20.1"
 description: >
   Records webhook payloads received from Coder notifications. Stores each
   event with receipt metadata for delivery latency and reliability analysis.
