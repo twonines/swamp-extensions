@@ -191,6 +191,15 @@ const StatusOutputSchema = z.object({
   checkedAt: z.string(),
 });
 
+const ResetOutputSchema = z.object({
+  project: z.string(),
+  branch: z.string(),
+  previousSha: z.string(),
+  currentSha: z.string(),
+  mode: z.enum(["soft", "mixed", "hard"]),
+  resetAt: z.string(),
+});
+
 const DiffOutputSchema = z.object({
   project: z.string(),
   ref: z.string(),
@@ -206,7 +215,7 @@ const DiffOutputSchema = z.object({
 /** Git workspace model — local clone, branch, read, commit, push operations. */
 export const model = {
   type: "@twonines/git-workspace",
-  version: "2026.07.20.1",
+  version: "2026.07.21.1",
   description: "Local git operations — clone, branch, read, commit, push. " +
     "Workspace layout: $HOME/{host}/{group}/{project} by default. " +
     "Designed for agent-driven development workflows.",
@@ -260,6 +269,12 @@ export const model = {
       schema: StatusOutputSchema,
       lifetime: "5m" as const,
       garbageCollection: 3,
+    },
+    reset: {
+      description: "Result of a git reset operation",
+      schema: ResetOutputSchema,
+      lifetime: "30m" as const,
+      garbageCollection: 5,
     },
     diff: {
       description: "Diff output between refs or working tree",
@@ -904,6 +919,93 @@ export const model = {
 
         await context.writeResource(
           "status",
+          args.project.replace(/\//g, "--"),
+          result,
+        );
+        return { dataHandles: [] };
+      },
+    },
+
+    reset: {
+      description:
+        "Reset the current branch HEAD. Modes: 'soft' keeps changes staged, " +
+        "'mixed' (default) unstages changes but keeps them in the working tree, " +
+        "'hard' discards all changes. Use to undo commits while preserving files.",
+      arguments: z.object({
+        project: z.string().describe("Project path."),
+        ref: z.string().optional().describe(
+          "Ref to reset to (e.g. HEAD~1, a commit SHA, origin/main). Default: HEAD~1.",
+        ),
+        mode: z.enum(["soft", "mixed", "hard"]).optional().describe(
+          "Reset mode: soft (keep staged), mixed (unstage, keep working tree), hard (discard all). Default: mixed.",
+        ),
+        localPath: z.string().optional().describe(
+          "Override the computed local workspace path.",
+        ),
+      }),
+      execute: async (
+        args: {
+          project: string;
+          ref?: string;
+          mode?: "soft" | "mixed" | "hard";
+          localPath?: string;
+        },
+        context: Ctx,
+      ) => {
+        const ga = context.globalArgs;
+        const localPath = resolveWorkspacePath(
+          ga,
+          args.project,
+          args.localPath,
+        );
+        const ref = args.ref || "HEAD~1";
+        const mode = args.mode || "mixed";
+
+        const previousSha = await git(["rev-parse", "HEAD"], localPath);
+        if (previousSha.code !== 0) {
+          throw new Error(
+            `Cannot determine current HEAD: ${previousSha.stderr}`,
+          );
+        }
+
+        context.logger.info(
+          "Resetting {project} to {ref} (--{mode})",
+          { project: args.project, ref, mode },
+        );
+
+        const resetResult = await git(
+          ["reset", `--${mode}`, ref],
+          localPath,
+        );
+        if (resetResult.code !== 0) {
+          throw new Error(`git reset failed: ${resetResult.stderr}`);
+        }
+
+        const currentSha = await git(["rev-parse", "HEAD"], localPath);
+        const branch = await git(
+          ["rev-parse", "--abbrev-ref", "HEAD"],
+          localPath,
+        );
+
+        const result = {
+          project: args.project,
+          branch: branch.stdout,
+          previousSha: previousSha.stdout,
+          currentSha: currentSha.stdout,
+          mode,
+          resetAt: new Date().toISOString(),
+        };
+
+        context.logger.info(
+          "Reset complete: {prev} → {curr}",
+          {
+            prev: previousSha.stdout.slice(0, 8),
+            curr: currentSha.stdout.slice(0, 8),
+          },
+        );
+
+        await context.writeResource(
+          "reset",
           args.project.replace(/\//g, "--"),
           result,
         );
