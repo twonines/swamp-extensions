@@ -1,0 +1,78 @@
+manifestVersion: 1
+name: "@twonines/redmine-story-status"
+version: "2026.08.18.1"
+description: |-
+  Read-only workflow for evidence-backed Redmine Story status analysis.
+
+  Purpose:
+  - Assess Story progress, completion, blockers, readiness, and remaining work.
+  - Combine Redmine data with optional meeting, Teams, and GitLab evidence.
+  - Produce a cited status assessment with confidence, risks, gaps, and questions.
+
+  Workflow:
+  - Collects the target Redmine Story and its direct child tasks.
+  - Ingests optional VTT, Markdown, or text meeting files.
+  - Reads one explicitly supplied Microsoft Teams thread when configured.
+  - Extracts and fetches explicitly referenced GitLab merge requests.
+  - Builds and cites source facts before qualitative analysis.
+  - Sanitizes untrusted source text before sending it to AWS Bedrock.
+  - Remains read-only: it does not modify Redmine, GitLab, or Teams resources.
+
+  Dependencies:
+  - @webframp/redmine — Story and child-task data.
+  - @webframp/gitlab — referenced merge-request evidence.
+  - @webframp/microsoft/teams — optional Teams thread evidence.
+  - @mgreten/brief-sanitize — source-text sanitization.
+
+  This extension bundles its own analyzer model and status report; they are not
+  external dependencies.
+
+  Required model instances:
+  - tracker using @webframp/redmine.
+  - gitlab using @webframp/gitlab.
+  - my-teams using @webframp/microsoft/teams.
+  - story-analyzer using @twonines/redmine-story-status.
+  - sanitizer using @mgreten/brief-sanitize.
+
+  Prerequisites:
+  - Set tracker.globalArguments.project to the target Redmine project.
+  - Keep the project name configurable; do not hardcode it in the workflow.
+  - Provide redmine-secrets.REDMINE_API_KEY for Redmine access.
+  - Provide GITLAB_API_TOKEN when referenced merge requests are fetched.
+  - Provide teams-secrets tenantId, clientId, and refreshToken for Teams access.
+  - Make supplied meeting-file paths readable by the workflow runtime.
+  - Provide AWS credentials with Bedrock access in us-east-1.
+  - The analyzer uses us.anthropic.claude-sonnet-4-20250514-v1:0.
+
+  Runtime inputs:
+  - storyId — required numeric Redmine Story identifier.
+  - meetingFiles — optional VTT, Markdown, or text file paths.
+  - teamsThreadUrl — optional Microsoft Teams message deep-link.
+
+  Installation:
+  - Pull with: swamp extension pull @twonines/redmine-story-status.
+  - Validate the workflow and model configuration before running it.
+repository: "https://github.com/twonines/swamp-extensions"
+paths:
+  base: manifest
+models:
+  - redmine_story_analysis.ts
+reports:
+  - redmine_story_status.ts
+workflows:
+  - workflow.yaml
+additionalFiles:
+  - README.md
+  - LICENSE.txt
+platforms: []
+labels:
+  - redmine
+  - workflow
+  - status
+  - evidence
+  - teams
+dependencies:
+  - "@webframp/redmine"
+  - "@webframp/gitlab"
+  - "@webframp/microsoft/teams"
+  - "@mgreten/brief-sanitize"

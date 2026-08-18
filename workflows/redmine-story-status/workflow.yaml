@@ -1,0 +1,204 @@
+id: bc896133-155c-4191-9791-5d7dfa167305
+name: "@twonines/redmine-story-status"
+description: >-
+  Read-only, evidence-backed analysis of a Redmine Story, its open tasks,
+  referenced GitLab merge requests, and supplied meeting-minute files.
+version: 1
+tags: {}
+inputs:
+  type: object
+  properties:
+    storyId:
+      type: integer
+      description: Redmine Story issue ID.
+    meetingFiles:
+      type: array
+      description: Relative or absolute paths to VTT, Markdown, or text meeting minutes.
+      items:
+        type: string
+      default: []
+    teamsThreadUrl:
+      type: string
+      description: Optional Microsoft Teams message deep-link for one thread.
+      default: ""
+  required:
+    - storyId
+jobs:
+  - name: collect-source-evidence
+    description: Fetch the Redmine Story, direct subtasks, meeting-minute files, and optional Teams thread.
+    dependsOn: []
+    weight: 0
+    steps:
+      - name: fetch-story
+        description: Fetch the Story description and current Redmine state.
+        task:
+          type: model_method
+          modelIdOrName: tracker
+          methodName: get_issue
+          inputs:
+            issueId: ${{ inputs.storyId }}
+        dataOutputOverrides:
+          - specName: issue_detail
+            vary:
+              - issueId
+        dependsOn: []
+        weight: 0
+        allowFailure: false
+      - name: fetch-tasks
+        description: Fetch direct child tasks with status, progress, and descriptions.
+        task:
+          type: model_method
+          modelIdOrName: tracker
+          methodName: list_issues
+          inputs:
+            parentId: ${{ inputs.storyId }}
+            limit: 100
+            sort: "updated_on:desc"
+        dataOutputOverrides:
+          - specName: issues
+            vary:
+              - parentId
+        dependsOn: []
+        weight: 0
+        allowFailure: false
+      - name: ingest-meeting-files
+        description: Normalize supplied meeting minutes while preserving source locators.
+        task:
+          type: model_method
+          modelIdOrName: story-analyzer
+          methodName: ingest_meeting_files
+          inputs:
+            storyId: ${{ inputs.storyId }}
+            paths: ${{ inputs.meetingFiles }}
+        dataOutputOverrides:
+          - specName: documents
+            vary:
+              - storyId
+        dependsOn: []
+        weight: 0
+        allowFailure: false
+      - name: read-teams-thread
+        description: Fetch the explicitly supplied Teams thread as optional source evidence.
+        guard: ${{ inputs.teamsThreadUrl == '' }}
+        task:
+          type: model_method
+          modelIdOrName: my-teams
+          methodName: read_thread
+          inputs:
+            threadUrl: ${{ inputs.teamsThreadUrl }}
+        dependsOn: []
+        weight: 0
+        allowFailure: false
+
+  - name: extract-references
+    description: Extract explicit GitLab project!IID and merge-request URL references.
+    dependsOn:
+      - job: collect-source-evidence
+        condition:
+          type: succeeded
+    weight: 0
+    steps:
+      - name: extract-gitlab-references
+        description: Extract references from the Story, tasks, and meeting minutes.
+        task:
+          type: model_method
+          modelIdOrName: story-analyzer
+          methodName: extract_gitlab_references
+          inputs:
+            storyId: ${{ inputs.storyId }}
+            story: ${{ data.query('modelName == "tracker" && specName == "issue_detail" && name == "' + string(inputs.storyId) + '-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes }}
+            tasks: ${{ data.query('modelName == "tracker" && specName == "issues" && name == "all-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes.issues }}
+            meetings: ${{ data.query('modelName == "story-analyzer" && specName == "documents" && name == "' + string(inputs.storyId) + '-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes }}
+        dataOutputOverrides:
+          - specName: references
+            vary:
+              - storyId
+        dependsOn: []
+        weight: 0
+        allowFailure: false
+
+  - name: fetch-gitlab-evidence
+    description: Fetch all explicitly referenced GitLab MRs in one read-only fan-out.
+    dependsOn:
+      - job: extract-references
+        condition:
+          type: succeeded
+    weight: 0
+    steps:
+      - name: fetch-referenced-mrs
+        description: Fetch MR state, mergeability, pipeline status, and blockers.
+        task:
+          type: model_method
+          modelIdOrName: gitlab
+          methodName: fetch_referenced_merge_requests
+          inputs:
+            storyId: ${{ inputs.storyId }}
+            references: ${{ data.query('modelName == "story-analyzer" && specName == "references" && name == "' + string(inputs.storyId) + '-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes.references }}
+        dataOutputOverrides:
+          - specName: referencedMergeRequests
+            vary:
+              - storyId
+        dependsOn: []
+        weight: 0
+        allowFailure: false
+
+  - name: prepare-and-analyze
+    description: Build evidence, sanitize it, and generate the final LLM analysis.
+    dependsOn:
+      - job: fetch-gitlab-evidence
+        condition:
+          type: succeeded
+    weight: 0
+    steps:
+      - name: build-evidence
+        description: Build deterministic facts, citation locators, and prompt items.
+        task:
+          type: model_method
+          modelIdOrName: story-analyzer
+          methodName: build_evidence
+          inputs:
+            storyId: ${{ inputs.storyId }}
+            story: ${{ data.query('modelName == "tracker" && specName == "issue_detail" && name == "' + string(inputs.storyId) + '-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes }}
+            tasks: ${{ data.query('modelName == "tracker" && specName == "issues" && name == "all-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes.issues }}
+            meetings: ${{ data.query('modelName == "story-analyzer" && specName == "documents" && name == "' + string(inputs.storyId) + '-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes }}
+            mergeRequests: ${{ data.query('modelName == "gitlab" && specName == "referencedMergeRequests" && name == "' + string(inputs.storyId) + '-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes }}
+            teamsThread: >-
+              ${{ inputs.teamsThreadUrl == '' ? {} : data.query('modelName == "my-teams" && specName == "thread" && workflowRunId == "' + run.id + '"')[0].?attributes.orValue({}) }}
+        dataOutputOverrides:
+          - specName: evidence
+            vary:
+              - storyId
+        dependsOn: []
+        weight: 0
+        allowFailure: false
+      - name: sanitize-evidence
+        description: Sanitize untrusted source text before it is sent to Bedrock.
+        task:
+          type: model_method
+          modelIdOrName: sanitizer
+          methodName: sanitize
+          inputs:
+            items: ${{ data.query('modelName == "story-analyzer" && specName == "evidence" && name == "' + string(inputs.storyId) + '-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes.items }}
+        dependsOn:
+          - step: build-evidence
+            condition:
+              type: succeeded
+        weight: 0
+        allowFailure: false
+      - name: analyze-story
+        description: Generate a structured, evidence-backed qualitative Story analysis.
+        task:
+          type: model_method
+          modelIdOrName: story-analyzer
+          methodName: analyze
+          inputs:
+            storyId: ${{ inputs.storyId }}
+            facts: ${{ data.query('modelName == "story-analyzer" && specName == "evidence" && name == "' + string(inputs.storyId) + '-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes.facts }}
+            citations: ${{ data.query('modelName == "story-analyzer" && specName == "evidence" && name == "' + string(inputs.storyId) + '-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes.citations }}
+            sanitized: ${{ data.query('modelName == "sanitizer" && specName == "sanitized" && name == "sanitized" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes }}
+        dependsOn:
+          - step: sanitize-evidence
+            condition:
+              type: succeeded
+        weight: 0
+        allowFailure: false
