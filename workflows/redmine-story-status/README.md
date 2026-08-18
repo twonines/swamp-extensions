@@ -63,8 +63,24 @@ globalArguments:
   project: your-redmine-project
 ```
 
-The analyzer uses AWS Bedrock model `us.anthropic.claude-sonnet-4-20250514-v1:0`
-in `us-east-1`.
+Configure the `story-analyzer` model with the two hosts it needs to build
+citation links. Both are **required** and have no defaults — they are
+deployment-specific, so they belong on the model instance rather than in this
+extension:
+
+```yaml
+globalArguments:
+  gitlabHost: gitlab.example.com # host serving referenced merge requests
+  redmineWebHost: https://redmine.example.com # Redmine web UI, for citation links
+```
+
+Without `gitlabHost`, a merge request with no `webUrl` is cited by its
+`project!iid` reference instead of a link — no URL is guessed.
+
+The analyzer's other defaults are overridable on the same instance: `modelId`,
+`region`, `maxTokens`, `temperature`, `maxFileBytes`, `maxTotalBytes`. It is
+designed for AWS Bedrock; `us.anthropic.claude-sonnet-4-20250514-v1:0` in
+`us-east-1` is a known-good choice.
 
 ### Vaults and access
 

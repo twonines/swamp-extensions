@@ -35,9 +35,9 @@ Deno.test("extracts explicit GitLab references from URLs and project references"
   >();
   extractGitlabReferences(
     "story",
-    "See https://git.bethelservice.org/group/app/-/merge_requests/12 and group/app!12.",
+    "See https://gitlab.example.com/group/app/-/merge_requests/12 and group/app!12.",
     "redmine:issue:123.description",
-    "git.bethelservice.org",
+    "gitlab.example.com",
     references,
   );
   if (references.size !== 1) {
@@ -68,7 +68,7 @@ Deno.test("chunks long evidence so the sanitizer does not drop the rest of a doc
     [],
     { documents: [], warnings: [] },
     { mergeRequests: [], unresolved: [] },
-    "https://cdredmine.bethelservice.org",
+    "https://redmine.example.com",
   );
   const storyItems = evidence.items.filter((item) =>
     item.kind === "redmine-story"
@@ -108,7 +108,7 @@ Deno.test("builds cited Teams evidence with attribution, locator, and facts", ()
     {
       teamId: "team-1",
       channelId: "channel-1",
-      channelName: "Orchestration",
+      channelName: "Example Channel",
       parentMessageId: "parent-1",
       root: {
         id: "root-1",
@@ -158,7 +158,7 @@ Deno.test("builds cited Teams evidence with attribution, locator, and facts", ()
   }
 
   const teamsFacts = evidence.facts.teams as Record<string, unknown>;
-  if (teamsFacts.channelName !== "Orchestration") {
+  if (teamsFacts.channelName !== "Example Channel") {
     throw new Error("Expected channel name fact");
   }
   if (teamsFacts.totalReplies !== 1) {

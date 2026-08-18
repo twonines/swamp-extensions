@@ -31,9 +31,13 @@ const GlobalArgsSchema = z.object({
   ),
   maxTokens: z.number().int().min(256).max(20000).default(6000),
   temperature: z.number().min(0).max(1).default(0),
-  gitlabHost: z.string().min(1).default("git.bethelservice.org"),
-  redmineWebHost: z.string().min(1).default(
-    "https://cdredmine.bethelservice.org",
+  gitlabHost: z.string().min(1).describe(
+    "Host serving referenced GitLab merge requests, e.g. gitlab.example.com. " +
+      "Required: set it on the model instance, not here.",
+  ),
+  redmineWebHost: z.string().min(1).describe(
+    "Base URL of the Redmine web UI used to build citation links, e.g. " +
+      "https://redmine.example.com. Required: set it on the model instance.",
   ),
   maxFileBytes: z.number().int().positive().max(10_000_000).default(5_000_000),
   maxTotalBytes: z.number().int().positive().max(50_000_000).default(
@@ -288,7 +292,7 @@ async function invokeBedrock(
  */
 export const model = {
   type: "@twonines/redmine-story-status",
-  version: "2026.08.12.1",
+  version: "2026.08.18.2",
   globalArguments: GlobalArgsSchema,
   reports: ["@twonines/redmine-story-report"],
   resources: {
