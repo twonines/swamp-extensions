@@ -1,0 +1,36 @@
+manifestVersion: 1
+name: "@twonines/doc-fact-checker"
+version: 2026.08.18.1
+description: >
+  Fact-check one Markdown document through a provider-neutral, read-only
+  adapter. Kiro CLI is the default provider; Claude CLI is supported when
+  explicitly selected. Repository and optional web capabilities are recorded
+  separately, with no provider fallback.
+repository: "https://github.com/twonines/swamp-extensions"
+paths:
+  base: manifest
+models:
+  - doc_fact_check.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports:
+  - doc_review_report.ts
+additionalFiles:
+  - README.md
+  - LICENSE.md
+  - kiro/agents/doc-fact-checker.md
+  - kiro/agents/doc-fact-checker.json
+  - kiro/skills/doc-fact-checker/SKILL.md
+platforms: []
+labels:
+  - docs
+  - documentation
+  - fact-check
+  - review
+  - read-only
+  - security
+  - claude
+  - kiro
+dependencies: []
