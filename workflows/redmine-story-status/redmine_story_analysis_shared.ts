@@ -494,10 +494,13 @@ export function buildEvidence(
     const itemId = `gitlab-mr-${
       project.replace(/[^A-Za-z0-9_-]/g, "-")
     }-${iid}`;
+    // No host fallback: without webUrl or an explicit gitlabHost, cite the
+    // project!iid reference rather than fabricate a URL against a guessed host.
+    const mrHost = stringValue(mr.gitlabHost);
     const url = stringValue(mr.webUrl) ||
-      `https://${
-        stringValue(mr.gitlabHost) || "git.bethelservice.org"
-      }/${project}/-/merge_requests/${iid}`;
+      (mrHost
+        ? `https://${mrHost}/${project}/-/merge_requests/${iid}`
+        : reference);
     const evidenceIds = addChunked(
       itemId,
       "gitlab-mr",
