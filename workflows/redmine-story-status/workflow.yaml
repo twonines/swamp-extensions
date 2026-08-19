@@ -107,7 +107,7 @@ jobs:
           inputs:
             storyId: ${{ inputs.storyId }}
             story: ${{ data.query('modelName == "tracker" && specName == "issue_detail" && name == "' + string(inputs.storyId) + '-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes }}
-            tasks: ${{ data.query('modelName == "tracker" && specName == "issues" && name == "all-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes.issues }}
+            tasks: ${{ data.query('modelName == "tracker" && specName == "issues" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes.issues }}
             meetings: ${{ data.query('modelName == "story-analyzer" && specName == "documents" && name == "' + string(inputs.storyId) + '-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes }}
         dataOutputOverrides:
           - specName: references
@@ -159,7 +159,7 @@ jobs:
           inputs:
             storyId: ${{ inputs.storyId }}
             story: ${{ data.query('modelName == "tracker" && specName == "issue_detail" && name == "' + string(inputs.storyId) + '-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes }}
-            tasks: ${{ data.query('modelName == "tracker" && specName == "issues" && name == "all-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes.issues }}
+            tasks: ${{ data.query('modelName == "tracker" && specName == "issues" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes.issues }}
             meetings: ${{ data.query('modelName == "story-analyzer" && specName == "documents" && name == "' + string(inputs.storyId) + '-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes }}
             mergeRequests: ${{ data.query('modelName == "gitlab" && specName == "referencedMergeRequests" && name == "' + string(inputs.storyId) + '-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes }}
             teamsThread: >-
