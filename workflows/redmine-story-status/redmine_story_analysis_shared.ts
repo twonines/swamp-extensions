@@ -413,6 +413,41 @@ export function buildEvidence(
     `issue:${storyIdValue}.description`,
   );
 
+  // A Redmine journal is two unrelated things in one array: a field-change
+  // record (notes empty, details populated) or on-the-record discussion (notes
+  // non-empty). Only the discussion is evidence — the field changes are already
+  // reflected in the story and task facts, and emitting them would bury the
+  // comments that matter. Notes are textile/markdown, not HTML, so they are not
+  // run through stripHtml the way Teams message bodies are.
+  const journals = Array.isArray(story.journals)
+    ? story.journals.map(asRecord)
+    : [];
+  const discussionFacts: Record<string, unknown>[] = [];
+  for (const journal of journals) {
+    const journalId = numberValue(journal.id);
+    if (journalId === null) continue;
+    const notes = stringValue(journal.notes).trim();
+    if (notes.length === 0) continue;
+    const author = stringValue(objectField(journal, "user").name) ||
+      "Unknown author";
+    const createdOn = stringValue(journal.createdOn) || "Unknown timestamp";
+    const evidenceIds = addChunked(
+      `redmine-comment-${journalId}`,
+      "redmine-comment",
+      `Comment #${journalId} on story #${storyIdValue} — ${author} @ ${createdOn}`,
+      notes,
+      "redmine",
+      `issue:${storyIdValue}#journal=${journalId}`,
+    );
+    discussionFacts.push({
+      id: journalId,
+      author,
+      createdOn,
+      evidenceId: evidenceIds[0],
+      evidenceIds,
+    });
+  }
+
   const taskFacts: Record<string, unknown>[] = [];
   for (const task of tasks) {
     const id = numberValue(task.id);
@@ -588,6 +623,7 @@ export function buildEvidence(
       evidenceIds: storyEvidenceIds,
     },
     tasks: taskFacts,
+    discussion: discussionFacts,
     mergeRequests: mrFacts,
     unresolvedMergeRequests: Array.isArray(mergeRequests.unresolved)
       ? mergeRequests.unresolved
@@ -607,6 +643,7 @@ export function factsForPrompt(
   const mergeRequests = Array.isArray(facts.mergeRequests)
     ? facts.mergeRequests
     : [];
+  const discussion = Array.isArray(facts.discussion) ? facts.discussion : [];
   return {
     story: {
       id: story.id,
@@ -637,6 +674,15 @@ export function factsForPrompt(
         detailedMergeStatus: mr.detailedMergeStatus,
         blockers: mr.blockers,
         evidenceIds: mr.evidenceIds ?? [mr.evidenceId],
+      };
+    }),
+    discussion: discussion.map((value) => {
+      const comment = asRecord(value);
+      return {
+        id: comment.id,
+        author: comment.author,
+        createdOn: comment.createdOn,
+        evidenceIds: comment.evidenceIds ?? [comment.evidenceId],
       };
     }),
     unresolvedMergeRequests: facts.unresolvedMergeRequests ?? [],

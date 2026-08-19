@@ -245,3 +245,160 @@ Deno.test("absent or empty Teams threads add no evidence and do not crash", () =
     }
   }
 });
+
+Deno.test("turns Redmine journal notes into citable comment evidence, skipping field-change records", () => {
+  const evidence = buildEvidence(
+    999999,
+    {
+      id: 999999,
+      subject: "Story with discussion",
+      description: "Story body.",
+      status: { name: "In Progress" },
+      tracker: { name: "Story" },
+      journals: [
+        // Field-change only: no notes, must not become evidence.
+        {
+          id: 1,
+          user: { id: 7, name: "Ada Lovelace" },
+          notes: "",
+          createdOn: "2026-08-01T10:00:00Z",
+          details: [{
+            property: "attr",
+            name: "status_id",
+            oldValue: "1",
+            newValue: "2",
+          }],
+        },
+        // Whitespace-only notes are field changes too.
+        {
+          id: 2,
+          user: { id: 7, name: "Ada Lovelace" },
+          notes: "   \n  ",
+          createdOn: "2026-08-02T10:00:00Z",
+          details: [],
+        },
+        // Real discussion.
+        {
+          id: 3,
+          user: { id: 8, name: "Grace Hopper" },
+          notes:
+            "We ruled out the batch approach; the registry scan is the blocker.",
+          createdOn: "2026-08-03T10:00:00Z",
+          details: [],
+        },
+      ],
+    },
+    [],
+    { documents: [], warnings: [] },
+    { mergeRequests: [], unresolved: [] },
+    "https://redmine.example.com",
+  );
+
+  const comments = evidence.items.filter((item) =>
+    item.kind === "redmine-comment"
+  );
+  if (comments.length !== 1) {
+    throw new Error(
+      `Expected only the notes-bearing journal, got ${comments.length}`,
+    );
+  }
+  if (comments[0].id !== "redmine-comment-3") {
+    throw new Error(`Unexpected comment item id: ${comments[0].id}`);
+  }
+  if (!comments[0].body.includes("ruled out the batch approach")) {
+    throw new Error("Expected the note text in the evidence body");
+  }
+  if (!comments[0].title.includes("Grace Hopper")) {
+    throw new Error("Expected the comment author in the title");
+  }
+
+  const citation = evidence.citations.find((entry) =>
+    entry.id === "redmine-comment-3"
+  );
+  if (!citation) throw new Error("Expected a citation for the comment");
+  if (citation.source !== "redmine") {
+    throw new Error(`Unexpected citation source: ${citation.source}`);
+  }
+  if (citation.locator !== "issue:999999#journal=3") {
+    throw new Error(`Unexpected citation locator: ${citation.locator}`);
+  }
+
+  const discussion = evidence.facts.discussion;
+  if (!Array.isArray(discussion) || discussion.length !== 1) {
+    throw new Error("Expected one discussion fact");
+  }
+  const comment = discussion[0] as Record<string, unknown>;
+  if (comment.id !== 3 || comment.author !== "Grace Hopper") {
+    throw new Error("Unexpected discussion fact contents");
+  }
+  if (comment.evidenceId !== "redmine-comment-3") {
+    throw new Error("Discussion fact must cite its evidence item");
+  }
+});
+
+Deno.test("chunks a long Redmine comment and keeps every chunk citable", () => {
+  const evidence = buildEvidence(
+    999999,
+    {
+      id: 999999,
+      subject: "Story with a long comment",
+      description: "",
+      status: { name: "In Progress" },
+      tracker: { name: "Story" },
+      journals: [{
+        id: 42,
+        user: { id: 9, name: "Katherine Johnson" },
+        notes: "y".repeat(12001),
+        createdOn: "2026-08-04T10:00:00Z",
+        details: [],
+      }],
+    },
+    [],
+    { documents: [], warnings: [] },
+    { mergeRequests: [], unresolved: [] },
+    "https://redmine.example.com",
+  );
+  const comments = evidence.items.filter((item) =>
+    item.kind === "redmine-comment"
+  );
+  if (comments.length !== 3) {
+    throw new Error(`Expected three comment chunks, got ${comments.length}`);
+  }
+  if (comments.some((item) => item.body.length > 5000)) {
+    throw new Error("A comment chunk exceeded the sanitizer-safe size");
+  }
+  const discussion = evidence.facts.discussion as Record<string, unknown>[];
+  const evidenceIds = discussion[0].evidenceIds as string[];
+  if (evidenceIds.length !== 3) {
+    throw new Error("Expected the discussion fact to list all three chunk ids");
+  }
+  for (const id of evidenceIds) {
+    if (!evidence.citations.some((entry) => entry.id === id)) {
+      throw new Error(`Chunk ${id} has no citation`);
+    }
+  }
+});
+
+Deno.test("a story with no journals produces no discussion evidence", () => {
+  const evidence = buildEvidence(
+    999999,
+    {
+      id: 999999,
+      subject: "Quiet story",
+      description: "Story body.",
+      status: { name: "New" },
+      tracker: { name: "Story" },
+    },
+    [],
+    { documents: [], warnings: [] },
+    { mergeRequests: [], unresolved: [] },
+    "https://redmine.example.com",
+  );
+  if (evidence.items.some((item) => item.kind === "redmine-comment")) {
+    throw new Error("Expected no comment evidence without journals");
+  }
+  const discussion = evidence.facts.discussion;
+  if (!Array.isArray(discussion) || discussion.length !== 0) {
+    throw new Error("Expected an empty discussion array, not a missing key");
+  }
+});
