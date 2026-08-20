@@ -28,7 +28,8 @@ Story + optional meeting files + optional Teams thread
        Cited status, progress, blockers, risks, and gaps
 ```
 
-- Source collection runs in parallel.
+- Source collection runs in parallel, except the child-task fetch, which waits
+  for the Story so it can scope the query to the Story's own project.
 - Teams retrieval is skipped when no `teamsThreadUrl` is supplied.
 - The workflow is read-only.
 - Source locators are preserved through analysis.
@@ -62,6 +63,11 @@ model configuration, not a workflow constant:
 globalArguments:
   project: your-redmine-project
 ```
+
+The child-task fetch does not rely on that default. It scopes `list_issues` to
+the project the analyzed Story actually belongs to, read from the Story fetched
+one step earlier — so a Story outside the `tracker` instance's default project
+still returns its tasks instead of an empty list.
 
 Configure the `story-analyzer` model with the two hosts it needs to build
 citation links. Both are **required** and have no defaults — they are

@@ -51,6 +51,7 @@ jobs:
           modelIdOrName: tracker
           methodName: list_issues
           inputs:
+            project: ${{ string(data.query('modelName == "tracker" && specName == "issue_detail" && name == "' + string(inputs.storyId) + '-' + string(inputs.storyId) + '" && workflowRunId == "' + run.id + '" && version >= 0')[0].attributes.project.id) }}
             parentId: ${{ inputs.storyId }}
             limit: 100
             sort: "updated_on:desc"
@@ -58,7 +59,10 @@ jobs:
           - specName: issues
             vary:
               - parentId
-        dependsOn: []
+        dependsOn:
+          - step: fetch-story
+            condition:
+              type: succeeded
         weight: 0
         allowFailure: false
       - name: ingest-meeting-files
