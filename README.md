@@ -40,43 +40,49 @@ time. Publishing before the change is on `main` declares a source location that 
 yet contain the source.
 
 ```bash
-EXT=$PWD/workflows/redmine-story-status      # the extension you are working on
-REPO=~/path/to/a/swamp-repo                  # any swamp-initialized repo you own
+EXT=$PWD/workflows/my-extension   # the extension you are working on — absolute path
+REPO=~/path/to/a/swamp-repo       # the swamp repo you test and publish from
 
-git switch -c short-description-of-change    # one extension per branch and per PR
-deno test --allow-env $EXT                   # flags vary; --allow-env is the minimum
-deno check $EXT
+git switch -c short-description-of-change   # one extension per branch and per pull request
 
+# Enter dev mode: $REPO loads this extension from the working tree, not the registry.
+swamp extension source add $EXT --repo-dir $REPO
+
+deno test --allow-env $EXT   # its own tests; flags vary, --allow-env is the minimum
+deno check $EXT              # typecheck the TypeScript it ships
+
+# Ask the registry for the next CalVer version, then lint and score the manifest.
 swamp extension version --manifest $EXT/manifest.yaml --json
 swamp extension fmt     $EXT/manifest.yaml --check --repo-dir $REPO --json
 swamp extension quality $EXT/manifest.yaml --repo-dir $REPO --json
 
-# open the pull request and get it merged — then, and only then:
-swamp extension push $EXT/manifest.yaml --dry-run --repo-dir $REPO --json
-swamp extension push $EXT/manifest.yaml --yes     --repo-dir $REPO --json
+# Open the pull request and get it merged. Then, and only then, publish.
+swamp extension push $EXT/manifest.yaml --dry-run --repo-dir $REPO --json   # preview
+swamp extension push $EXT/manifest.yaml --yes     --repo-dir $REPO --json   # for real
+
+# Back to consume mode: stop shadowing, adopt the release you just published.
+swamp extension source rm $EXT --repo-dir $REPO
+swamp extension pull @twonines/my-extension
 ```
 
-The manifest path must be **absolute**: with `--repo-dir`, a relative manifest path is
-resolved inside the swamp repo, not here. `--repo-dir` itself must point at a swamp
-repository; swamp refuses outright otherwise (`Not a swamp repository: …`).
+`$EXT` is absolute because with `--repo-dir` a relative manifest path resolves inside the
+swamp repo, not here. `--repo-dir` itself must point at a swamp repository; swamp refuses
+outright otherwise (`Not a swamp repository: …`).
 
-Versions are CalVer — ask the registry what comes next rather than guessing, and keep the
-manifest and the model source in step. **Aim for 14/14 on `quality`** — 12 are earnable
-locally and all 12 should be earned; the registry awards the last 2 on publish, from the
-source already on `main`.
+Keep the manifest version and the model source in step. **Aim for 14/14 on `quality`** —
+12 are earnable locally and all 12 should be earned; the registry awards the last 2 on
+publish, from the source already on `main`.
 
-Consumers adopt a release on their own schedule — a published version stays pinned by
-their lockfile until they ask for the new one with
-`swamp extension pull @twonines/<extension>`.
+Consumers other than you adopt a release on their own schedule — a published version stays
+pinned by their lockfile until they ask for the new one.
 
-## Working against an unpublished change
+## Why dev mode needs `source rm`
 
-A consumer repo can run this working tree directly, without publishing, by registering it
-in `.swamp-sources.yaml`. Load order is local `extensions/` → registered sources → pulled
-extensions, so **a registered source shadows a pulled extension of the same type**: the
-consumer silently runs uncommitted code while `swamp extension list` still reports the
-published version. **Steady state is zero registered sources.** `.swamp-sources.yaml` is
-developer-specific and git-ignored.
+Load order is local `extensions/` → registered sources → pulled extensions, so **a
+registered source shadows a pulled extension of the same type**: the repo silently runs
+uncommitted code while `swamp extension list` still reports the published version. That is
+why `source rm` closes the loop above — **steady state is zero registered sources.**
+`.swamp-sources.yaml` records them; it is developer-specific and git-ignored.
 
 ## License
 
