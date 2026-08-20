@@ -44,17 +44,15 @@ REPO=~/path/to/a/swamp-repo                  # any swamp-initialized repo you ow
 git switch -c short-description-of-change
 ```
 
-**2. Test and typecheck what you touched.** Permission flags vary per extension;
-`--allow-env` is the minimum — [`AGENTS.md`](AGENTS.md#conventions) explains why.
+**2. Test and typecheck what you touched.**
 
 ```bash
-deno test --allow-env $EXT
+deno test --allow-env $EXT   # flags vary per extension; --allow-env is the minimum
 deno check $EXT
 ```
 
-**3. Bump the version and check the manifest.** Versions are CalVer, `YYYY.MM.DD.N` — ask
-the registry what comes next rather than guessing, and keep the manifest version and the
-version in the model source in step.
+**3. Bump the version and check the manifest.** Versions are CalVer — ask the registry what
+comes next rather than guessing, and keep the manifest and the model source in step.
 
 ```bash
 swamp extension version --manifest $EXT/manifest.yaml --json
@@ -62,17 +60,14 @@ swamp extension fmt     $EXT/manifest.yaml --check --repo-dir $REPO --json
 swamp extension quality $EXT/manifest.yaml --repo-dir $REPO --json
 ```
 
-**Aim for 14/14 on `quality`.** Locally you can earn 12 of them, and all 12 should be
-earned — `allPassed: true`, `percentage: 100`. The last 2 are `repository-verified`, which
-only the registry can award, on publish, from the source that is already on `main`.
+**Aim for 14/14 on `quality`** — 12 are earnable locally and all 12 should be earned. The
+registry awards the last 2 on publish, from the source already on `main`.
 
 **4. Open a pull request** and get it merged. This is the review gate — every extension
 change reaches `main` by PR.
 
 **5. Publish, only after the merge.** `--repo-dir` must point at a swamp repository; swamp
-refuses outright otherwise (`Not a swamp repository: …`). Nothing else about the command
-changes per extension, because `paths: {base: manifest}` makes every path resolve from the
-manifest's own directory.
+refuses outright otherwise (`Not a swamp repository: …`).
 
 ```bash
 swamp extension push $EXT/manifest.yaml --dry-run --repo-dir $REPO --json
