@@ -1,0 +1,84 @@
+id: 8e9cd49a-78ea-4c7e-8db1-a081f3af0749
+name: "@twonines/cribl-health-digest"
+description: >
+  Fans out health/notifications/log checks across Cribl Stream worker groups
+  plus a status.cribl.cloud check, then correlates the results into one
+  report -- flagging cases where Cribl's own health/alerting stayed quiet
+  despite a real runtime problem visible only in cribl.log.
+tags: {}
+inputs:
+  type: object
+  properties:
+    workerGroups:
+      type: array
+      items:
+        type: string
+      minItems: 1
+      default:
+        - default
+    logFilter:
+      type: string
+      default: "level == 'error'"
+reports:
+  require:
+    - "@twonines/cribl-health-digest"
+jobs:
+  - name: main
+    description: Fan out health, notifications, and log checks per worker group, plus one status-page check
+    steps:
+      - name: health-${{ self.wg }}
+        description: Config-level fan-out health check for this worker group
+        forEach:
+          item: wg
+          in: ${{ inputs.workerGroups }}
+        task:
+          type: model_method
+          modelIdOrName: cribl-stream
+          methodName: health
+          inputs:
+            workerGroup: ${{ self.wg }}
+        dependsOn: []
+        weight: 0
+        allowFailure: true
+      - name: notifications-${{ self.wg }}
+        description: Cribl's own raised/resolved alert feed for this worker group
+        forEach:
+          item: wg
+          in: ${{ inputs.workerGroups }}
+        task:
+          type: model_method
+          modelIdOrName: cribl-stream
+          methodName: list_notifications
+          inputs:
+            workerGroup: ${{ self.wg }}
+        dependsOn: []
+        weight: 0
+        allowFailure: true
+      - name: log-scan-${{ self.wg }}
+        description: Search cribl.log for runtime errors config/health can't see
+        forEach:
+          item: wg
+          in: ${{ inputs.workerGroups }}
+        task:
+          type: model_method
+          modelIdOrName: cribl-stream
+          methodName: get_log_lines
+          inputs:
+            workerGroup: ${{ self.wg }}
+            fileId: "__instance__:cribl.log"
+            filter: ${{ inputs.logFilter }}
+        dependsOn: []
+        weight: 0
+        allowFailure: true
+      - name: status-page
+        description: Check status.cribl.cloud for any current/historical incident to correlate against
+        task:
+          type: model_method
+          modelIdOrName: cribl-stream
+          methodName: check_status_page
+        dependsOn: []
+        weight: 0
+        allowFailure: true
+    dependsOn: []
+    weight: 0
+version: 1
