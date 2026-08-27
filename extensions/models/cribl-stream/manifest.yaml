@@ -1,0 +1,124 @@
+manifestVersion: 1
+name: "@twonines/cribl-stream"
+version: 2026.08.27.3
+description: |
+  Read-only integration for troubleshooting Cribl Stream Cloud deployments
+  via the REST API -- sources, routes, pipelines, destinations, event
+  capture, lookups, knowledge objects, worker-group logs/notifications,
+  and the public status page.
+
+  A fork of @figura/cribl-stream with more methods -- this is the place
+  to improve on it. Also proposed upstream:
+  https://github.com/ftveronezzi/swamp-extensions/pull/2
+
+  ## Authentication
+
+  Requires a Cribl Cloud API Client ID and Client Secret, stored in a
+  swamp vault. Generate credentials in Cribl Cloud under Settings → API
+  Credentials. (check_status_page and list_status_page_incidents are
+  unauthenticated calls to Cribl's public status.cribl.cloud instead.)
+
+  ## Methods
+
+  ### Configuration
+
+  What's deployed in a worker group, and how it's wired together.
+
+  - **list_sources** — List all input sources in a worker group
+  - **get_source** — Get detailed config for a specific source
+  - **list_routes** — List routes with filter, pipeline, output mappings
+  - **list_pipelines** — List all pipelines in a worker group
+  - **get_pipeline** — Get pipeline config with all functions
+  - **list_destinations** — List output destinations with status
+  - **get_destination** — Get detailed config for a destination
+  - **list_lookups** — List lookup files in a worker group
+  - **list_knowledge** — List knowledge objects (parsers, vars, schemas)
+
+  ### Live data
+
+  Events flowing through the pipeline right now.
+
+  - **capture_events** — Capture/preview live events at a pipeline point
+
+  ### Health, logs & alerting
+
+  What config alone won't tell you -- actual runtime state.
+
+  - **health** — Fan-out health check across all components
+  - **list_notifications** — Cribl's own raised/resolved alert feed for a worker group
+  - **list_log_files** — List available log files for a worker group instance
+  - **get_log_lines** — Read parsed log events from one log file, with an optional filter expression
+
+  ### Cribl status page
+
+  Unauthenticated calls to status.cribl.cloud.
+
+  - **check_status_page** — Check Cribl's public status page for ongoing incidents/maintenances
+  - **list_status_page_incidents** — List Cribl's historical status-page incidents
+
+  ## Usage
+
+  ```bash
+  # List all sources in the "default" worker group
+  swamp model method run cribl-stream list_sources --set workerGroup=default
+
+  # Get detailed config for a specific pipeline
+  swamp model method run cribl-stream get_pipeline --set workerGroup=default --set pipelineId=my-syslog-pipeline
+
+  # Capture 5 live events from a source
+  swamp model method run cribl-stream capture_events --set workerGroup=default --set sourceId=syslog-in --set maxEvents=5
+
+  # Run a health check across the worker group
+  swamp model method run cribl-stream health --set workerGroup=default
+
+  # Search cribl.log for anything mentioning a destination, past the live tail
+  swamp model method run cribl-stream get_log_lines \
+    --set workerGroup=default \
+    --set fileId='__instance__:cribl.log' \
+    --set filter="_raw.includes('my-destination')"
+
+  # Check whether Cribl itself has an ongoing incident
+  swamp model method run cribl-stream check_status_page
+  ```
+
+  ## Bundled workflow and report
+
+  `workflow.yaml` (`@twonines/cribl-health-digest`) fans out `health`,
+  `list_notifications`, and `get_log_lines` across one or more worker groups,
+  plus a single org-wide `check_status_page` check. Its workflow-scope
+  report, `@twonines/cribl-health-digest`, correlates the results instead of
+  just listing them -- flagging any worker group where health and
+  notifications stayed quiet despite a real hit in the log scan ("silent
+  alerting"). Run it with:
+
+  ```bash
+  swamp workflow run "@twonines/cribl-health-digest" \
+    --input '{"workerGroups": ["default"]}'
+  ```
+repository: "https://github.com/twonines/swamp-extensions"
+paths:
+  base: manifest
+models:
+  - cribl_stream.ts
+workflows:
+  - workflow.yaml
+vaults: []
+drivers: []
+datastores: []
+reports:
+  - cribl_health_digest_report.ts
+additionalFiles:
+  - README.md
+  - LICENSE.txt
+platforms:
+  - linux-x86_64
+  - linux-aarch64
+  - darwin-x86_64
+  - darwin-aarch64
+labels:
+  - cribl
+  - cribl-stream
+  - observability
+  - troubleshooting
+  - data-pipeline
+dependencies: []
