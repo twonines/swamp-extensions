@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@twonines/cribl-stream"
-version: 2026.08.27.3
+version: 2026.08.27.4
 description: |
   Read-only integration for troubleshooting Cribl Stream Cloud deployments
   via the REST API -- sources, routes, pipelines, destinations, event
@@ -56,6 +56,17 @@ description: |
   - **check_status_page** — Check Cribl's public status page for ongoing incidents/maintenances
   - **list_status_page_incidents** — List Cribl's historical status-page incidents
 
+  ### Per-node status (bypassing leader aggregation)
+
+  list_sources/get_source/health read a leader-aggregated view of a worker
+  group. On Cribl Cloud that aggregated view has been observed to report
+  numRequests: 0 for a source that is, per-node, actively processing tens of
+  thousands of events -- these three read one worker node directly instead.
+
+  - **list_workers** — List worker nodes org-wide (id, health, worker group, hostname)
+  - **get_node_input_status** — One worker node's own live status/metrics for one input
+  - **get_node_output_status** — One worker node's own live status/metrics for one output
+
   ## Usage
 
   ```bash
@@ -79,6 +90,11 @@ description: |
 
   # Check whether Cribl itself has an ongoing incident
   swamp model method run cribl-stream check_status_page
+
+  # Find a worker group's node ids, then read one node's real traffic directly
+  swamp model method run cribl-stream list_workers
+  swamp model method run cribl-stream get_node_input_status \
+    --set nodeId=<node-id-from-list_workers> --set sourceId=open_telemetry
   ```
 
   ## Bundled workflow and report
