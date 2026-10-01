@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@twonines/redmine-story-status"
-version: "2026.08.20.1"
+version: "2026.10.01.1"
 description: |-
   Read-only workflow for evidence-backed Redmine Story status analysis.
 
@@ -41,13 +41,14 @@ description: |-
   - Provide GITLAB_API_TOKEN when referenced merge requests are fetched.
   - Provide teams-secrets tenantId, clientId, and refreshToken for Teams access.
   - Make supplied meeting-file paths readable by the workflow runtime.
-  - Provide AWS credentials with Bedrock access in us-east-1.
+  - Provide AWS credentials with Bedrock access in us-east-1 when `analyze=true`.
   - The analyzer uses us.anthropic.claude-sonnet-4-20250514-v1:0.
 
   Runtime inputs:
   - storyId — required numeric Redmine Story identifier.
   - meetingFiles — optional VTT, Markdown, or text file paths.
   - teamsThreadUrl — optional Microsoft Teams message deep-link.
+  - analyze — optional boolean; set false to write deterministic evidence without AWS.
 
   Installation:
   - Pull with: swamp extension pull @twonines/redmine-story-status.
