@@ -293,12 +293,11 @@ async function invokeBedrock(
  */
 export const model = {
   type: "@twonines/redmine-story-status",
-  version: "2026.08.20.1",
+  version: "2026.10.01.1",
   globalArguments: GlobalArgsSchema,
-  // No-op: GlobalArgsSchema is byte-identical to the published 2026.08.19.1, so
-  // there is nothing to transform. The entry exists so existing instances still
-  // advance their typeVersion — without it they keep the old one forever and a
-  // later upgrade chaining from this version would skip them.
+  // No-op: GlobalArgsSchema is unchanged. The entry exists so existing
+  // instances advance their typeVersion — without it they keep the old one
+  // forever and a later upgrade chaining from this version would skip them.
   upgrades: [
     {
       toVersion: "2026.08.19.1",
@@ -307,9 +306,9 @@ export const model = {
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
     {
-      toVersion: "2026.08.20.1",
+      toVersion: "2026.10.01.1",
       description:
-        "Workflow scopes the child-task fetch to the analyzed Story's own project. Workflow-only change; no globalArguments changes.",
+        "Workflow adds an evidence-only analyze=false mode; globalArguments unchanged.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],

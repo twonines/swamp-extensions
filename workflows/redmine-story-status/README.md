@@ -41,6 +41,7 @@ Story + optional meeting files + optional Teams thread
 | `storyId`        | integer      |   Yes    | —       | Numeric Redmine Story ID.                                       |
 | `meetingFiles`   | string array |    No    | `[]`    | Paths to VTT, Markdown, or text meeting minutes.                |
 | `teamsThreadUrl` | string       |    No    | `""`    | One Microsoft Teams message deep-link; the full thread is read. |
+| `analyze`        | boolean      |    No    | `true`   | When `false`, stop after deterministic evidence; skip sanitization and Bedrock analysis. |
 
 ## Requirements
 
@@ -119,6 +120,18 @@ swamp workflow run @twonines/redmine-story-status \
   --input 'meetingFiles=["path/to/meeting.vtt"]' \
   --input 'teamsThreadUrl=https://teams.microsoft.com/l/message/...'
 ```
+
+With evidence-only mode, the workflow stops after deterministic evidence and does not require
+AWS Bedrock credentials:
+
+```bash
+swamp workflow run @twonines/redmine-story-status \
+  --input storyId="$STORY_ID" \
+  --input analyze=false
+```
+
+This still fetches the current Story, child tasks, and explicitly referenced GitLab merge
+requests, and writes the `evidence` resource. It does not write an `analysis` resource.
 
 Validate before running:
 

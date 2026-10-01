@@ -21,6 +21,10 @@ inputs:
       type: string
       description: Optional Microsoft Teams message deep-link for one thread.
       default: ""
+    analyze:
+      type: boolean
+      description: Run sanitization and Bedrock analysis after evidence is built.
+      default: true
   required:
     - storyId
 jobs:
@@ -177,6 +181,7 @@ jobs:
         allowFailure: false
       - name: sanitize-evidence
         description: Sanitize untrusted source text before it is sent to Bedrock.
+        guard: ${{ !inputs.analyze }}
         task:
           type: model_method
           modelIdOrName: sanitizer
@@ -191,6 +196,7 @@ jobs:
         allowFailure: false
       - name: analyze-story
         description: Generate a structured, evidence-backed qualitative Story analysis.
+        guard: ${{ !inputs.analyze }}
         task:
           type: model_method
           modelIdOrName: story-analyzer
