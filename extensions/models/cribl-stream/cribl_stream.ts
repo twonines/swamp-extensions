@@ -10,9 +10,16 @@
  * calls to Cribl's public status.cribl.cloud).
  *
  * Forked from @figura/cribl-stream (https://github.com/ftveronezzi/swamp-extensions)
- * with 5 additional methods: list_notifications, list_log_files,
- * get_log_lines, check_status_page, list_status_page_incidents. Also
- * proposed upstream: https://github.com/ftveronezzi/swamp-extensions/pull/2
+ * with 8 additional methods: list_notifications, list_log_files,
+ * get_log_lines, check_status_page, list_status_page_incidents, list_workers,
+ * get_node_input_status, get_node_output_status. Also proposed upstream:
+ * https://github.com/ftveronezzi/swamp-extensions/pull/2
+ *
+ * list_sources/get_source/health read a leader-aggregated view of a worker
+ * group. On Cribl Cloud that aggregated view has been observed to report
+ * numRequests: 0 for a source that is, per-node, actively processing tens of
+ * thousands of events -- list_workers + get_node_input_status/
+ * get_node_output_status bypass the aggregation and read one node directly.
  *
  * @module
  */
@@ -231,6 +238,26 @@ const StatusPageIncidentsOutputSchema = z.object({
   fetchedAt: z.string(),
 });
 
+const WorkersOutputSchema = z.object({
+  workers: z.array(z.record(z.unknown())),
+  count: z.number(),
+  fetchedAt: z.string(),
+});
+
+const NodeInputStatusOutputSchema = z.object({
+  nodeId: z.string(),
+  sourceId: z.string(),
+  status: z.record(z.unknown()).nullable(),
+  fetchedAt: z.string(),
+});
+
+const NodeOutputStatusOutputSchema = z.object({
+  nodeId: z.string(),
+  destinationId: z.string(),
+  status: z.record(z.unknown()).nullable(),
+  fetchedAt: z.string(),
+});
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -365,7 +392,7 @@ function instanceKey(prefix: string, workerGroup: string, id?: string): string {
 /** Cribl Stream Cloud read-only integration for troubleshooting. */
 export const model = {
   type: "@twonines/cribl-stream",
-  version: "2026.08.27.2",
+  version: "2026.08.27.3",
   globalArguments: GlobalArgsSchema,
   resources: {
     sources: {
@@ -466,6 +493,33 @@ export const model = {
         "One page of Cribl's historical status-page incidents (resolved + unresolved)",
       schema: StatusPageIncidentsOutputSchema,
       lifetime: "15m" as const,
+      garbageCollection: 10,
+    },
+    workers: {
+      description:
+        "Worker nodes across the organization, with their id, health status, and worker " +
+        "group -- use the returned `id` values with get_node_input_status/" +
+        "get_node_output_status for per-node (not aggregated) traffic metrics",
+      schema: WorkersOutputSchema,
+      lifetime: "15m" as const,
+      garbageCollection: 5,
+    },
+    node_input_status: {
+      description:
+        "A single worker node's live status/metrics for one input, straight from that " +
+        "node -- unlike list_sources/get_source and the group-level `health` method, which " +
+        "read a leader-aggregated view that has been observed to report numRequests: 0 " +
+        "even while the individual nodes behind it are actively processing traffic",
+      schema: NodeInputStatusOutputSchema,
+      lifetime: "2m" as const,
+      garbageCollection: 10,
+    },
+    node_output_status: {
+      description:
+        "A single worker node's live status/metrics for one output, straight from that " +
+        "node -- same per-node caveat as node_input_status",
+      schema: NodeOutputStatusOutputSchema,
+      lifetime: "2m" as const,
       garbageCollection: 10,
     },
   },
@@ -1523,6 +1577,142 @@ export const model = {
         context.logger.info("Fetched Cribl status page incidents", {
           page: args.page,
           count: data.count,
+        });
+        return { dataHandles: [handle] };
+      },
+    },
+
+    list_workers: {
+      description:
+        "List worker nodes across the organization (id, health status, worker group, " +
+        "hostname/platform). Use the returned `id` values with get_node_input_status/" +
+        "get_node_output_status to check a specific node's actual traffic, rather than " +
+        "the leader-aggregated view that list_sources/get_source/health rely on.",
+      arguments: z.object({}),
+      execute: async (_args: Record<string, never>, context: ModelContext) => {
+        const { baseUrl, clientId, clientSecret } = context.globalArgs;
+        const resp = await criblGet(
+          baseUrl,
+          clientId,
+          clientSecret,
+          "/api/v1/products/stream/workers",
+        ) as {
+          items?: {
+            id: string;
+            status: string;
+            group: string;
+            info?: Record<string, unknown>;
+          }[];
+        };
+
+        const workers = (resp.items ?? []).map((w) => ({
+          id: w.id,
+          status: w.status,
+          group: w.group,
+          hostname: w.info?.hostname,
+          platform: w.info?.platform,
+          architecture: w.info?.architecture,
+          cpus: w.info?.cpus,
+        }));
+
+        const data = {
+          workers,
+          count: workers.length,
+          fetchedAt: new Date().toISOString(),
+        };
+
+        const handle = await context.writeResource(
+          "workers",
+          "workers-all",
+          data,
+        );
+
+        context.logger.info("Fetched Cribl worker nodes", {
+          count: data.count,
+        });
+        return { dataHandles: [handle] };
+      },
+    },
+
+    get_node_input_status: {
+      description:
+        "Get one worker node's own live status/metrics for one input, bypassing the " +
+        "leader-aggregated view. Use list_workers to find node ids for a worker group.",
+      arguments: z.object({
+        nodeId: z.string().describe("Worker node id (from list_workers)"),
+        sourceId: z.string().describe("Source/input id"),
+      }),
+      execute: async (
+        args: { nodeId: string; sourceId: string },
+        context: ModelContext,
+      ) => {
+        const { baseUrl, clientId, clientSecret } = context.globalArgs;
+        const path = `/api/v1/w/${encodeURIComponent(args.nodeId)}` +
+          `/system/status/inputs/${
+            encodeURIComponent(args.sourceId)
+          }?metrics=1`;
+        const resp = await criblGet(baseUrl, clientId, clientSecret, path) as {
+          items?: Record<string, unknown>[];
+        };
+
+        const data = {
+          nodeId: args.nodeId,
+          sourceId: args.sourceId,
+          status: (resp.items?.[0]?.status as Record<string, unknown>) ?? null,
+          fetchedAt: new Date().toISOString(),
+        };
+
+        const handle = await context.writeResource(
+          "node_input_status",
+          instanceKey("node-input-status", args.nodeId, args.sourceId),
+          data,
+        );
+
+        context.logger.info("Fetched per-node input status", {
+          nodeId: args.nodeId,
+          sourceId: args.sourceId,
+        });
+        return { dataHandles: [handle] };
+      },
+    },
+
+    get_node_output_status: {
+      description:
+        "Get one worker node's own live status/metrics for one output, bypassing the " +
+        "leader-aggregated view. Use list_workers to find node ids for a worker group.",
+      arguments: z.object({
+        nodeId: z.string().describe("Worker node id (from list_workers)"),
+        destinationId: z.string().describe("Destination/output id"),
+      }),
+      execute: async (
+        args: { nodeId: string; destinationId: string },
+        context: ModelContext,
+      ) => {
+        const { baseUrl, clientId, clientSecret } = context.globalArgs;
+        const path = `/api/v1/w/${encodeURIComponent(args.nodeId)}` +
+          `/system/status/outputs/${
+            encodeURIComponent(args.destinationId)
+          }?metrics=1`;
+        const resp = await criblGet(baseUrl, clientId, clientSecret, path) as {
+          items?: Record<string, unknown>[];
+        };
+
+        const data = {
+          nodeId: args.nodeId,
+          destinationId: args.destinationId,
+          status: (resp.items?.[0]?.status as Record<string, unknown>) ?? null,
+          fetchedAt: new Date().toISOString(),
+        };
+
+        const handle = await context.writeResource(
+          "node_output_status",
+          instanceKey("node-output-status", args.nodeId, args.destinationId),
+          data,
+        );
+
+        context.logger.info("Fetched per-node output status", {
+          nodeId: args.nodeId,
+          destinationId: args.destinationId,
         });
         return { dataHandles: [handle] };
       },

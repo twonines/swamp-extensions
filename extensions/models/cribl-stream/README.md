@@ -8,7 +8,7 @@ A fork of [@figura/cribl-stream](https://github.com/ftveronezzi/swamp-extensions
 |---|---|
 | **Scope** | Read-only — no mutations are ever performed on your Cribl environment |
 | **Auth** | OAuth2 `client_credentials` (Cribl Cloud API Client ID/Secret) |
-| **Methods** | 16 |
+| **Methods** | 19 |
 | **License** | MIT |
 
 ## Installation
@@ -67,6 +67,16 @@ Unauthenticated calls to `status.cribl.cloud` — no worker group or credentials
 | `check_status_page` | Current system indicator, unresolved incidents, and active maintenances |
 | `list_status_page_incidents` | Historical incidents (resolved and unresolved), most recent first |
 
+### Per-node status (bypassing leader aggregation)
+
+`list_sources`/`get_source`/`health` read a leader-aggregated view of a worker group. On Cribl Cloud that aggregated view has been observed to report `numRequests: 0` for a source that is, per-node, actively processing tens of thousands of events — these three read one worker node directly instead.
+
+| Method | Description |
+|---|---|
+| `list_workers` | List worker nodes org-wide (id, health, worker group, hostname) |
+| `get_node_input_status` | One worker node's own live status/metrics for one input |
+| `get_node_output_status` | One worker node's own live status/metrics for one output |
+
 ## Usage
 
 ```bash
@@ -90,6 +100,11 @@ swamp model method run cribl-stream get_log_lines \
 
 # Check whether Cribl itself has an ongoing incident
 swamp model method run cribl-stream check_status_page
+
+# Find a worker group's node ids, then read one node's real traffic directly
+swamp model method run cribl-stream list_workers
+swamp model method run cribl-stream get_node_input_status \
+  --set nodeId=<node-id-from-list_workers> --set sourceId=open_telemetry
 ```
 
 ## License
