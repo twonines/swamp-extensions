@@ -1,0 +1,33 @@
+manifestVersion: 1
+name: "@twonines/eks-upgrade-insights"
+version: "2026.10.23.1"
+description: >-
+  AWS EKS Upgrade Insights for upgrade readiness. Given one or more EKS cluster
+  names, it reads the cluster's UPGRADE_READINESS insights (control-plane
+  health, add-on compatibility, version skew, deprecated-API usage from audit
+  logs) and records each, flagging ERROR/WARNING insights as actionable with
+  their remediation detail. Uses the ambient AWS credential chain (env vars,
+  SSO, or a named profile) — no secret is stored, which suits short-lived STS
+  credentials.
+repository: "https://github.com/twonines/swamp-extensions"
+paths:
+  base: manifest
+models:
+  - cluster.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports:
+  - eks-insights.ts
+additionalFiles:
+  - README.md
+  - LICENSE.md
+labels:
+  - aws
+  - eks
+  - kubernetes
+  - upgrade
+  - insights
+  - readiness
+dependencies: []
