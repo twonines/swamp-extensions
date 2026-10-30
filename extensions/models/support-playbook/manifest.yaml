@@ -1,0 +1,16 @@
+manifestVersion: 1
+name: "@twonines/support-playbook"
+version: 2026.10.30.3
+description: "Shared routing rules for support-request workflows. Stores who owns each kind of ticket in the swamp datastore, so every person who runs the workflows reads the same rules."
+repository: "https://github.com/twonines/swamp-extensions"
+license: MIT
+paths:
+  base: manifest
+models:
+  - mod.ts
+additionalFiles:
+  - README.md
+  - LICENSE.md
+labels:
+  - support-requests
+  - routing
