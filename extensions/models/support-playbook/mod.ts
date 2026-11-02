@@ -33,10 +33,20 @@ export function upsertRules(existing: Rule[], incoming: Rule[]): Rule[] {
   return [...byId.values()];
 }
 
+/** The namespace that every Cloud Ops repository must use for the rules. */
+export const REQUIRED_NAMESPACE = "cloudops";
+
+/** Read `datastore.namespace` from the text of `.swamp.yaml`. Returns null if absent. */
+export function namespaceOf(swampYaml: string): string | null {
+  // ponytail: regex, not a YAML parser. Add a parser if .swamp.yaml gains a second `namespace:` key.
+  return swampYaml.match(/^\s+namespace:\s*["']?([\w.-]+)["']?\s*$/m)?.[1] ??
+    null;
+}
+
 /** Model that stores the routing rules. The method `add_rules` adds or replaces rules. */
 export const model = {
   type: "@twonines/support-playbook",
-  version: "2026.10.30.1",
+  version: "2026.11.02.2",
   globalArguments: z.object({}),
   resources: {
     rules: {
@@ -61,6 +71,15 @@ export const model = {
       }),
       // deno-lint-ignore no-explicit-any
       execute: async (args: { rules: any[] }, context: any) => {
+        const yaml = await Deno.readTextFile(`${context.repoDir}/.swamp.yaml`);
+        const ns = namespaceOf(yaml);
+        if (ns !== REQUIRED_NAMESPACE) {
+          throw new Error(
+            `The datastore namespace is "${
+              ns ?? "none"
+            }". It must be "${REQUIRED_NAMESPACE}". Run: swamp datastore setup extension @swamp/s3-datastore --namespace ${REQUIRED_NAMESPACE} --config '{...}'. See the README.`,
+          );
+        }
         // readResource returns null on the first run. Any read error stops the
         // method, so a failed read never overwrites the stored rules.
         const existing: Rule[] = (await context.readResource("rules"))?.rules ??

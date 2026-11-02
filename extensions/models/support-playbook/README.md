@@ -1,8 +1,27 @@
 # support-playbook
 
-A swamp model that keeps routing rules for support requests in the swamp
-datastore. A rule says who owns a kind of ticket and what to do about it. Every
+A swamp model that keeps routing rules for Cloud Ops support requests in the
+swamp datastore. A rule says who owns a kind of ticket and what to do about it. Every
 person who uses the same datastore reads the same rules.
+
+## Set up the datastore
+
+This model stores the rules in the swamp datastore of the repository that runs
+it. Cloud Ops keeps the rules in the namespace `cloudops`. Each person must
+scope the datastore of their repository to that namespace. Do this step before
+the first run. Without it, the rules go to a different namespace and other
+people do not see them.
+
+```bash
+swamp datastore setup extension @swamp/s3-datastore \
+  --namespace cloudops \
+  --config '{"bucket": "jw-cd-swamp-datastore", "prefix": "swamp", "region": "us-east-1"}'
+swamp datastore status
+```
+
+The file `.swamp.yaml` must now show `namespace: cloudops` under `datastore`.
+If the file shows a different namespace, the rules are not shared. The method
+`add_rules` fails with an error in that case.
 
 ## Create the model
 
